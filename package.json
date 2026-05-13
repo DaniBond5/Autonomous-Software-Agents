@@ -1,0 +1,24 @@
+{
+  "name": "autonomous-software-agents",
+  "version": "1.0.0",
+  "description": "",
+  "homepage": "https://github.com/DaniBond5/Autonomous-Software-Agents#readme",
+  "bugs": {
+    "url": "https://github.com/DaniBond5/Autonomous-Software-Agents/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DaniBond5/Autonomous-Software-Agents.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "@unitn-asa/deliveroo-js-sdk": "^1.3.5",
+    "dotenv": "^17.4.2"
+  }
+}
