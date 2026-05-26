@@ -25,11 +25,9 @@ class AgentData{
 
     get_carried_score = () => {
         let total = 0;
-        for (bgdParcelKey of this.baggedParcels.keys()) {
-            if (this.parcels.has(bgdParcelKey)) {
-                baggedParcel = this.baggedParcels.get(bgdParcelKey)
-                total += baggedParcel.reward
-            }
+        for (const bgdParcelKey of this.baggedParcels.keys()) {
+            baggedParcel = this.baggedParcels.get(bgdParcelKey)
+            total += baggedParcel.reward
         }
         return total;
     }
