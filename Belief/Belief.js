@@ -2,7 +2,6 @@ import { AgentData } from "./AgentData.js";
 import {socket } from "../connection.js";
 
 const agentData = new AgentData();
-console.log("i'm here");
 
 socket.onYou( ({id, name, x, y, score}) => {
     if (agentData.id == "" || agentData.name == ""){

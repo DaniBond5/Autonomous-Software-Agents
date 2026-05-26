@@ -31,7 +31,6 @@ class AgentData{
                 total += baggedParcel.reward
             }
         }
-        console.log(total);
         return total;
     }
 }
