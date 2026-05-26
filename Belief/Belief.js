@@ -17,12 +17,10 @@ socket.onSensing( async (sensing) => {
         if (!p.carriedBy) {
             if (!agentData.parcels.has(p.id)) {
                 agentData.parcels.set(p.id, p);
-                console.log("stored a new parcel: ", p.id);
             }
         }else if(p.carriedBy == agentData.id) {
             if(!agentData.baggedParcels.has(p.id)) {
                 agentData.baggedParcels.set(p.id, p);
-                console.log("picked up parcel :", p.id);
             }
         }
     }
