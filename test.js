@@ -7,6 +7,7 @@ setInterval(() => {
     
     console.log("\nINFORMAZIONI MAPPA");
     console.log("Width: ", gameData.mapWidth, " Height: ", gameData.mapHeight);
+    console.log(gameData.gameMap);
 
     console.log("\nSTATO AGENTE");
     
@@ -17,7 +18,7 @@ setInterval(() => {
     console.log(`Pacchi nello zaino: ${agentData.baggedParcels.size}`);
     
     console.log(`Valore totale nello zaino: ${agentData.get_carried_score()}`);
-    
+
     console.log("--------------------\n");
 
 }, 5000);

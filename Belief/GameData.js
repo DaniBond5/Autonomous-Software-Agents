@@ -63,12 +63,10 @@ class GameData {
         this.mapWidth = width;
         this.mapHeight = height;
 
-        this.gameMap = new Map();
-        
+        this.gameMap.clear();
         for (let i = 0; i < tileset.length; i++) {
-            for (let j = 0; j < tileset[i].length; j++) {
-                this.gameMap.set("${i},${y}", tileset[i][j]);
-            }
+            const key = `${tileset[i].x},${tileset[i].y}`;
+            this.gameMap.set(key, tileset[i]);
         }
     }
 
