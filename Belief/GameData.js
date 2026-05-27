@@ -1,14 +1,33 @@
 class GameData {
 
+    /**
+     * * @typedef {Object} Tile
+     * @property {number} x
+     * @property {number} y
+     * @property {import("@unitn-asa/deliveroo-js-sdk/types/IOTile.js").IOTileType}
+     */
     constructor(){
         this.mapWidth = -1;
         this.mapHeight = -1;
 
         /** Can't use objects as key for maps, solution is to use a string defining the coordinates of the tile instead.
          * Positions are unique anyway.
-         * @type {Map  <string, string >}
+         * This is the complete map of the current game.
+         * @type {Map<string, Tile>}
          */
         this.gameMap = new Map();
+
+        /**
+         * This map stores the parcel spawning tiles
+         * @type {Map<string, Tile>}
+         */
+        this.parcelSpawmingMap = new Map();
+
+        /**
+         * This map stores the parcel delivery tiles
+         * @type {Map<string, Tile>}
+         */
+        this.deliveryMap = new Map();
 
         /**
          * @type {number}
@@ -64,9 +83,14 @@ class GameData {
         this.mapHeight = height;
 
         this.gameMap.clear();
-        for (let i = 0; i < tileset.length; i++) {
-            const key = `${tileset[i].x},${tileset[i].y}`;
-            this.gameMap.set(key, tileset[i]);
+        this.parcelSpawmingMap.clear();
+        this.deliveryMap.clear();
+        for (const tile of tileset){
+            const tileType = tile.type;
+            const key = `${tile.x},${tile.y}`;
+            this.gameMap.set(key, tile);
+            if (tileType == 1) this.parcelSpawmingMap.set(key, tile);
+            if (tileType == 2) this.deliveryMap.set(key, tile);
         }
     }
 

@@ -7,7 +7,8 @@ setInterval(() => {
     
     console.log("\nINFORMAZIONI MAPPA");
     console.log("Width: ", gameData.mapWidth, " Height: ", gameData.mapHeight);
-    console.log(gameData.gameMap);
+    //console.log(gameData.gameMap);
+    console.log(gameData.parcelSpawmingMap.size);
 
     console.log("\nSTATO AGENTE");
     
