@@ -1,9 +1,13 @@
 import { agentData } from "./Belief/belief.js"; 
+import { gameData } from "./Belief/belief.js";
 
 console.log(" Avvio del test");
 
 setInterval(() => {
     
+    console.log("\nINFORMAZIONI MAPPA");
+    console.log("Width: ", gameData.mapWidth, " Height: ", gameData.mapHeight);
+
     console.log("\nSTATO AGENTE");
     
     console.log(`Nome: ${agentData.name || "Sconosciuto"} (ID: ${agentData.id || "N/A"})`);

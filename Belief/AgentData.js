@@ -1,28 +1,51 @@
 class AgentData{
-    
-    id = "";
-    name = "";
-    pos = {x: -1, y : -1};
-    parcels = new Map();
-    baggedParcels = new Map();
 
     constructor(){
         this.id = "";
         this.name = "";
+        
         /**
          * @type {{x: number, y: number}}
          */
         this.pos = {x: -1, y: -1};
+        
         /**
          * @type { Map string,  < id:string, carriedBy?: string, x: number, y: number, reward: number > }
          */
         this.parcels = new Map();
+        
         /**
          * @type { Map string, < id:string, x: number, y: number, reward: number > }
          */
         this.baggedParcels = new Map();
+
+        /**
+         * @type {Map string, <id: string, name: string, teamId: string, x: number, y: number, score: number, penalty: number >}
+         */
+        this.enemyAgents = new Map();
     }
 
+    /**
+     * Function that updates the basic data of the agent:
+     * - id
+     * - name
+     * - position divided into coordinate x and y
+     * - score
+     * on the first call, it initialises both name and id, the following calls will update the position.
+     */
+    updateFromYou({id, name, x, y, score}) {
+        if (this.id == "" || this.name == ""){
+                this.id = id;
+                this.name = name;
+            }
+            this.pos.x = Math.round(x);
+            this.pos.y = Math.round(y);
+    }
+
+    /**
+     * TODO: Ritornare su questa funzione perchè molto naive e non funziona (probabilmente da rifare una volta fatta la logica di pickup)
+     * @returns total score of bagged parcels
+     */
     get_carried_score = () => {
         let total = 0;
         for (const parcel of this.baggedParcels.values()) {

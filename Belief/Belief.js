@@ -1,15 +1,12 @@
 import { AgentData } from "./AgentData.js";
 import {socket } from "../connection.js";
+import { GameData } from "./GameData.js";
 
 const agentData = new AgentData();
+const gameData = new GameData();
 
 socket.onYou( ({id, name, x, y, score}) => {
-    if (agentData.id == "" || agentData.name == ""){
-        agentData.id = id;
-        agentData.name = name;
-    }
-    agentData.pos.x = Math.round(x);
-    agentData.pos.y = Math.round(y);
+    agentData.updateFromYou({id, name, x, y, score});
 })
 
 socket.onSensing( async (sensing) => {
@@ -18,12 +15,37 @@ socket.onSensing( async (sensing) => {
             if (!agentData.parcels.has(p.id)) {
                 agentData.parcels.set(p.id, p);
             }
-        }else if(p.carriedBy == agentData.id) {
-            if(!agentData.baggedParcels.has(p.id)) {
-                agentData.baggedParcels.set(p.id, p);
+        }else if(agentData.baggedParcels.has(p.id)) {
+            agentData.baggedParcels.set(p.id, p);
+        }
+    }
+})
+
+socket.onSensing( async (sensing) => {
+    for (const a of sensing.agents) {
+        if (!a.x || !a.y) {
+            continue;
+        }
+        if (a.x % 1 != 0 || a.y % 1 != 0) {
+            continue;
+        }
+        if (!agentData.enemyAgents.has(a.id)) {
+            agentData.enemyAgents.set(a.id, a);
+        }else{
+            let lastEnemyAgentPosition = { x: agentData.enemyAgents.get(a.id).x, y: agentData.enemyAgents.get(a.id).y};
+            if (lastEnemyAgentPosition.x != a.x && lastEnemyAgentPosition.y != a.y) {
+                agentData.enemyAgents.set(a.id, a);
             }
         }
     }
 })
 
-export{agentData}
+socket.onConfig( async (config) => {
+    gameData.updateFromConfig(config);
+})
+
+socket.onMap( async (width, height, tileset) => {
+    gameData.updateFromOnMap(width, height, tileset);
+})
+
+export{agentData, gameData}
