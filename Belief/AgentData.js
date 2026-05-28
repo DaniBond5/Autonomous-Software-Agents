@@ -10,19 +10,21 @@ class AgentData{
         this.pos = {x: -1, y: -1};
         
         /**
-         * @type { Map string,  < id:string, carriedBy?: string, x: number, y: number, reward: number > }
+         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel> }
          */
         this.parcels = new Map();
         
         /**
-         * @type { Map string, < id:string, x: number, y: number, reward: number > }
+         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel }
          */
         this.baggedParcels = new Map();
 
         /**
-         * @type {Map string, <id: string, name: string, teamId: string, x: number, y: number, score: number, penalty: number >}
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOAgent}
          */
         this.enemyAgents = new Map();
+
+        this.options = [];
     }
 
     /**
