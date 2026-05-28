@@ -43,7 +43,6 @@ class AgentData{
     }
 
     /**
-     * TODO: Ritornare su questa funzione perchè molto naive e non funziona (probabilmente da rifare una volta fatta la logica di pickup)
      * @returns total score of bagged parcels
      */
     get_carried_score = () => {
