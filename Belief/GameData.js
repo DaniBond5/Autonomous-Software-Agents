@@ -1,3 +1,10 @@
+/** @type { function ({x:number, y:number}, {x:number, y:number}): number } */
+function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
+    const dx = Math.abs( Math.round(x1) - Math.round(x2) )
+    const dy = Math.abs( Math.round(y1) - Math.round(y2) )
+    return dx + dy;
+}
+
 class GameData {
 
     /**
@@ -13,19 +20,19 @@ class GameData {
         /** Can't use objects as key for maps, solution is to use a string defining the coordinates of the tile instead.
          * Positions are unique anyway.
          * This is the complete map of the current game.
-         * @type {Map<string, Tile>}
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
          */
         this.gameMap = new Map();
 
         /**
          * This map stores the parcel spawning tiles
-         * @type {Map<string, Tile>}
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
          */
         this.parcelSpawmingMap = new Map();
 
         /**
          * This map stores the parcel delivery tiles
-         * @type {Map<string, Tile>}
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
          */
         this.deliveryMap = new Map();
 
@@ -76,7 +83,7 @@ class GameData {
     /**
      * Function that saves the map information received upon a onMap sensing.
      * Saves map width, map height and the tileset.
-     * Currently RESETS the gameMap!
+     * Currently RESETS the gameMap
      */
     updateFromOnMap(width, height, tileset) {
         this.mapWidth = width;
@@ -93,7 +100,20 @@ class GameData {
             if (tileType == 2) this.deliveryMap.set(key, tile);
         }
     }
-
     
+    /** TODO: naive implementation, will probably have to go for something else once we implement
+     * search algorithms or PDDL
+     * Function that returns the closest delivery tile given a coordinate
+     * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} tileCoordinates 
+     * @returns the nearest delivery point wrt the given coordinate
+     */
+    getNearestDeliveryPoint({x, y}) {
+        const nearestDelivery = Array.from( this.deliveryMap.values() )
+        .sort( (a, b) => distance(x,y , a ) - distance( pos, b ) )
+        .shift();
+        return nearestDelivery;
+    }
+   
 }
-export{GameData}
+
+export{GameData, distance}
