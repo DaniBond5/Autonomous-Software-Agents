@@ -9,6 +9,7 @@ socket.onYou( ({id, name, x, y, score}) => {
     agentData.updateFromYou({id, name, x, y, score});
 })
 
+// TODO: currently, baggedParcels keeps decayed parcels, need to figure out where to put that logic
 socket.onSensing( async (sensing) => {
     for (const p of sensing.parcels) {
         agentData.parcels.set(p.id, p);
