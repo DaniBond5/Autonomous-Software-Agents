@@ -13,7 +13,13 @@ socket.onYou( ({id, name, x, y, score}) => {
 socket.onSensing( async (sensing) => {
     for (const p of sensing.parcels) {
         agentData.parcels.set(p.id, p);
-        if(p.carriedBy === agentData.id) agentData.baggedParcels.set(p.id, p);
+        if(p.carriedBy === agentData.id) {
+            if (p.reward <= 1) {
+                agentData.baggedParcels.delete(p.id);
+                continue;
+            }
+            agentData.baggedParcels.set(p.id, p);
+        }
     }
 })
 
