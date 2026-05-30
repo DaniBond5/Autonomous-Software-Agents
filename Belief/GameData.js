@@ -105,7 +105,7 @@ class GameData {
      * search algorithms or PDDL
      * Function that returns the closest delivery tile given a coordinate
      * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} tileCoordinates 
-     * @returns the nearest delivery point wrt the given coordinate
+     * @returns the nearest delivery tile wrt the given coordinates
      */
     getNearestDeliveryPoint({x, y}) {
         const nearestDelivery = Array.from( this.deliveryMap.values() )
@@ -124,6 +124,18 @@ class GameData {
         return this.movementDuration / this.parcelDecayingInterval;
     }
 
+    /**
+     * TODO: Another naive implementation for a first attempt at making it all work
+     * Function that returns the closest delivery tile given a coordinate.
+     * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} tileCoordinates 
+     * @returns the nearest parcel spawning tile wrt the given coordinates
+     */
+    getNearestSpawningPoint({x, y}) {
+        const nearestSpawningTile = Array.from( this.parcelSpawmingMap.values() )
+        .sort( (a, b) => distance({x,y} , a ) - distance( {x,y}, b ) )
+        .shift();
+        return nearestSpawningTile;
+    }
 }
 
 export{GameData, distance}
