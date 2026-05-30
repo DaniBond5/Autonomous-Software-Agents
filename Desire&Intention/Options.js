@@ -25,6 +25,10 @@ async function optionGeneration(){
         let deliveryInfo = compute_deliver_utility()
         agentData.options.push(['go_deliver', deliveryInfo[0].x, deliveryInfo[0].y, deliveryInfo[1]]);
     }
+
+    if (agentData.parcels.size === 0 && agentData.baggedParcels.size === 0) {
+        agentData.options.push(['go_to_spawner', nearestSpawner.x, nearestSpawner.y, utility]);
+    }
 }
 
 /**
@@ -88,4 +92,24 @@ function compute_deliver_utility() {
 
     let utility = baggedScore - ((decayFrequency * distanceToDelivery) * numBaggedParcels);
     return [nearestDelivery, utility];
+}
+
+function compute_nearest_spawner_exploration_utility() {
+    let outOfSightSpawners = Array.from(gameData.parcelSpawmingMap)
+        .filter( spawner => {
+            return distance(agentData.pos, {x: spawner.x, y: spawner.y}) > gameData.observationDistance;
+        })
+        if (outOfSightSpawners.size === 0) return 0;    // 0 all other utilities should be positive, some testing needed to see if 0 is the right choice
+
+        let nearestSpawner = gameData.getNearestSpawningPoint(agentData.pos);
+        let distanceToSpawner = distance(agentData.pos, nearestSpawner);
+        let decayFrequency = gameData.getDecayFrequency();
+
+        let expectedReward = (gameData.parcelAverageReward - (distanceToSpawner * decayFrequency));
+        if (expectedReward <= 0) return 0;
+
+        // TODO: might be useful to add a malus here.
+        let utility = (expectedReward) / distanceToSpawner;
+        return utility;
+        
 }
