@@ -8,8 +8,8 @@ async function optionGeneration(){
     agentData.options = [];
 
     /**
-     * TODO: A great idea would be to create a class representing the Option array, a chain
-     * of responsibility would be the go to IMO
+     * TODO: Might be useful to implement a class representing the option stack/array, may not be needed tho.
+     * Chain of responsibility would be perfect for classes that need to operate differently depending on the option type.
      */
 
     for (let p of agentData.parcels.values()) {
@@ -21,7 +21,7 @@ async function optionGeneration(){
         }
     }
 
-    if (gameData.decayFrequency > 0 || (agentData.get_carried_score() > gameData.parcelAverageReward * GO_DELIVER_THRESHOLD)) {
+    if ((agentData.baggedParcels.size > 0) || (gameData.getDecayFrequency() > 0) || (agentData.get_carried_score() > gameData.parcelAverageReward * GO_DELIVER_THRESHOLD)) {
         let deliveryInfo = compute_deliver_utility()
         agentData.options.push(['go_deliver', deliveryInfo[0].x, deliveryInfo[0].y, deliveryInfo[1]]);
     }
@@ -87,6 +87,5 @@ function compute_deliver_utility() {
     }
 
     let utility = baggedScore - ((decayFrequency * distanceToDelivery) * numBaggedParcels);
-
     return [nearestDelivery, utility];
 }
