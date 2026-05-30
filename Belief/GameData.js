@@ -113,7 +113,17 @@ class GameData {
         .shift();
         return nearestDelivery;
     }
-   
+ 
+    /**
+     * This function returns the frequency of parcel decay.
+     * If the decaying interval is set to 0, it returns 0, otherwise it computes the frequency
+     * @returns the parcel decay frequency
+     */
+    getDecayFrequency(){
+        if (this.parcelDecayingInterval == 0) return 0;
+        return this.movementDuration / this.parcelDecayingInterval;
+    }
+
 }
 
 export{GameData, distance}
