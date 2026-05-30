@@ -109,7 +109,7 @@ class GameData {
      */
     getNearestDeliveryPoint({x, y}) {
         const nearestDelivery = Array.from( this.deliveryMap.values() )
-        .sort( (a, b) => distance(x,y , a ) - distance( pos, b ) )
+        .sort( (a, b) => distance({x,y} , a ) - distance( {x,y}, b ) )
         .shift();
         return nearestDelivery;
     }
