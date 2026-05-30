@@ -33,11 +33,11 @@ async function optionGeneration(){
  */
 // TODO: Add edge case where parcel decay is disabled.
 function compute_pickup_utility(parcel) {
-    let numBaggedParcels = agentData.baggedParcels.size();
-    let distanceToParcel = distance(agentData.pos, parcel.x, parcel.y );
+    let numBaggedParcels = agentData.baggedParcels.size;
+    let distanceToParcel = distance(agentData.pos, {x: parcel.x, y: parcel.y});
     
     let nearestDelivery = gameData.getNearestDeliveryPoint(agentData.pos);
-    let distanceToNearestDelivery = distance(agentData.pos, nearestDelivery.x, nearestDelivery.y);
+    let distanceToNearestDelivery = distance(agentData.pos, {x: nearestDelivery.x, y: nearestDelivery.y});
     
     
     let totalDistance = (distanceToParcel + distanceToNearestDelivery);
@@ -75,10 +75,10 @@ function compute_deliver_utility() {
     let numBaggedParcels = agentData.baggedParcels.size;
     let baggedScore = agentData.get_carried_score();
 
-    // TODO: might be a good idea to add a bonus to make this option more appetising
 
+    // TODO: might be a good idea to add a bonus to make this option more appetising
+    let decayFrequency = gameData.getDecayFrequency();
     for (let parcel of agentData.baggedParcels.values()) {
-        let decayFrequency = gameData.getDecayFrequency();
         let ExpectedReward = parcel.reward - (decayFrequency * distanceToDelivery);
         if (ExpectedReward <= 0) {
             numBaggedParcels --;
