@@ -28,7 +28,7 @@ class GameData {
          * This map stores the parcel spawning tiles
          * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
          */
-        this.parcelSpawmingMap = new Map();
+        this.parcelSpawningMap = new Map();
 
         /**
          * This map stores the parcel delivery tiles
@@ -90,13 +90,13 @@ class GameData {
         this.mapHeight = height;
 
         this.gameMap.clear();
-        this.parcelSpawmingMap.clear();
+        this.parcelSpawningMap.clear();
         this.deliveryMap.clear();
         for (const tile of tileset){
             const tileType = tile.type;
             const key = `${tile.x},${tile.y}`;
             this.gameMap.set(key, tile);
-            if (tileType == 1) this.parcelSpawmingMap.set(key, tile);
+            if (tileType == 1) this.parcelSpawningMap.set(key, tile);
             if (tileType == 2) this.deliveryMap.set(key, tile);
         }
     }
@@ -131,7 +131,7 @@ class GameData {
      * @returns the nearest parcel spawning tile wrt the given coordinates
      */
     getNearestSpawningPoint({x, y}) {
-        const nearestSpawningTile = Array.from( this.parcelSpawmingMap.values() )
+        const nearestSpawningTile = Array.from( this.parcelSpawningMap.values() )
         .sort( (a, b) => distance({x,y} , a ) - distance( {x,y}, b ) )
         .shift();
         return nearestSpawningTile;

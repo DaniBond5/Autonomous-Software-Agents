@@ -95,7 +95,7 @@ function compute_deliver_utility() {
 }
 
 function compute_nearest_spawner_exploration_utility() {
-    let outOfSightSpawners = Array.from(gameData.parcelSpawmingMap)
+    let outOfSightSpawners = Array.from(gameData.parcelSpawningMap)
         .filter( spawner => {
             return distance(agentData.pos, {x: spawner.x, y: spawner.y}) > gameData.observationDistance;
         })
