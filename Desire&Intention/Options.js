@@ -1,6 +1,6 @@
-import { socket } from "../connection";
-import { agentData, gameData } from "../Belief/Belief";
-import { distance } from "../Belief/GameData";
+import { socket } from "../connection.js";
+import { agentData, gameData } from "../Belief/Belief.js";
+import { distance } from "../Belief/GameData.js";
 
 const GO_DELIVER_THRESHOLD = 5;     // threshold to make the agent go deliver parcels if he has X * averageParcelReward parcels in its bag
 
@@ -27,7 +27,8 @@ async function optionGeneration(){
     }
 
     if (agentData.parcels.size === 0 && agentData.baggedParcels.size === 0) {
-        agentData.options.push(['go_to_spawner', nearestSpawner.x, nearestSpawner.y, utility]);
+        let explorationInfo = compute_nearest_spawner_exploration_utility();
+        agentData.options.push(['go_to_spawner', explorationInfo[0].x, explorationInfo[0].y, explorationInfo[1]]);
     }
 }
 
@@ -47,7 +48,7 @@ function compute_pickup_utility(parcel) {
     let totalDistance = (distanceToParcel + distanceToNearestDelivery);
     let decayFrequency = gameData.getDecayFrequency();
     let baggedReward = agentData.get_carried_score();
-    for (baggedParcel of agentData.baggedParcels) {
+    for (let baggedParcel of agentData.baggedParcels) {
         let expectedParcelReward = baggedParcel.reward - decayFrequency * totalDistance;
 
         if (expectedParcelReward <= 0) {
@@ -110,6 +111,8 @@ function compute_nearest_spawner_exploration_utility() {
 
         // TODO: might be useful to add a malus here.
         let utility = (expectedReward) / distanceToSpawner;
-        return utility;
+        return [nearestSpawner, utility];
         
 }
+
+export {optionGeneration}
