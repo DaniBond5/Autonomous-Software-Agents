@@ -1,6 +1,6 @@
 import { AgentData } from "./AgentData.js";
 import { socket } from "../connection.js";
-import { GameData } from "./GameData.js";
+import { distance, GameData } from "./GameData.js";
 
 const agentData = new AgentData();
 const gameData = new GameData();
@@ -25,18 +25,15 @@ socket.onSensing( async (sensing) => {
 
 socket.onSensing( async (sensing) => {
     for (const a of sensing.agents) {
-        if (!a.x || !a.y) {
-            continue;
-        }
-        if (a.x % 1 != 0 || a.y % 1 != 0) {
-            continue;
-        }
-        if (!agentData.enemyAgents.has(a.id)) {
-            agentData.enemyAgents.set(a.id, a);
-        }else{
-            let lastEnemyAgentPosition = { x: agentData.enemyAgents.get(a.id).x, y: agentData.enemyAgents.get(a.id).y};
-            if (lastEnemyAgentPosition.x != a.x && lastEnemyAgentPosition.y != a.y) {
-                agentData.enemyAgents.set(a.id, a);
+        if (!a.x || !a.y) continue;
+        if (a.x % 1 != 0 || a.y % 1 != 0) continue;
+
+        agentData.enemyAgents.set(a.id, a);
+        
+        for (seenAgent of enemyAgents.values()) {
+            // Previously seen agent is no longer in observation distance
+            if (distance(agentData.pos, {x: seenAgent.x, y: seenAgent.y}) < gameData.observationDistance && !sensing.agents.find( ({id: agent_id}) => seenAgent.id == agent_id ) ) {
+                    agentData.enemyAgents.delete(seenAgent.id);
             }
         }
     }
