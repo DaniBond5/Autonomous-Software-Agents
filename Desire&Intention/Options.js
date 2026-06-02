@@ -16,7 +16,7 @@ async function optionGeneration(){
         if (!p.carriedBy && p.reward > 5 ) {
             let utility = compute_pickup_utility(p);
             if (utility > 0) {
-                agentData.options.push(['go_pick_up', p.x, p.y, p.id, utility]);
+                agentData.options.push(['go_pick_up', p, utility]);
             }
         }
     }
