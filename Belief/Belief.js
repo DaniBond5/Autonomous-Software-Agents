@@ -5,6 +5,9 @@ import { distance, GameData } from "./GameData.js";
 const agentData = new AgentData();
 const gameData = new GameData();
 
+/**
+ * Function that handles the onYou sensing event.
+ */
 socket.onYou( ({id, name, x, y, score}) => {
     agentData.updateFromYou({id, name, x, y, score});
 })
@@ -41,7 +44,7 @@ socket.onSensing( async (sensing) => {
 
         agentData.enemyAgents.set(a.id, a);
         
-        for (seenAgent of enemyAgents.values()) {
+        for (let seenAgent of agentData.enemyAgents.values()) {
             // Previously seen agent is no longer in observation distance
             if (distance(agentData.pos, {x: seenAgent.x, y: seenAgent.y}) < gameData.observationDistance && !sensing.agents.find( ({id: agent_id}) => seenAgent.id == agent_id ) ) {
                     agentData.enemyAgents.delete(seenAgent.id);
@@ -50,10 +53,16 @@ socket.onSensing( async (sensing) => {
     }
 })
 
+/**
+ * This function handles the onConfig sensing event.
+ */
 socket.onConfig( async (config) => {
     gameData.updateFromConfig(config);
 })
 
+/**
+ * This function handles the onMap sensing event.
+ */
 socket.onMap( async (width, height, tileset) => {
     gameData.updateFromOnMap(width, height, tileset);
 })
