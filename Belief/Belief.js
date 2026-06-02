@@ -10,6 +10,11 @@ socket.onYou( ({id, name, x, y, score}) => {
 })
 
 // TODO: currently, baggedParcels keeps decayed parcels, need to figure out where to put that logic
+/**
+ * Sensing function that handles parcel sensing.
+ * This function populates the agent's parcels map and removes parcels whose reward is <= 1
+ * TODO: might not be enough to remove all decayes parcels, tests needed
+ */
 socket.onSensing( async (sensing) => {
     for (const p of sensing.parcels) {
         agentData.parcels.set(p.id, p);
@@ -23,6 +28,12 @@ socket.onSensing( async (sensing) => {
     }
 })
 
+
+/**
+ * Sensing function that handles the sensing of other agents.
+ * This function populates the agent's enemyAgents map with valid values, it skips agents that are in the process of moving (or trying to).
+ * As of now, the agent only keeps track of the agents it can see at every agent sensing, so every agent that is no longer in the observation distance is removed.
+ */
 socket.onSensing( async (sensing) => {
     for (const a of sensing.agents) {
         if (!a.x || !a.y) continue;
