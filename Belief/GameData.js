@@ -71,7 +71,7 @@ class GameData {
         if (!config || !config.GAME) return;
         
         const playerConfig = config.GAME.player
-        this.movementDuration = playerConfig.movementDuration;
+        this.movementDuration = playerConfig.movement_duration;
         this.observationDistance = playerConfig.observation_distance;
 
         const parcelsConfig = config.GAME.parcels
