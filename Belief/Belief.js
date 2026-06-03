@@ -28,6 +28,11 @@ socket.onSensing( async (sensing) => {
             }
             agentData.baggedParcels.set(p.id, p);
         }
+        for (let seenParcel of agentData.parcels.values()) {
+            if(distance(agentData.pos, {x: seenParcel.x, y: seenParcel.y}) > gameData.observationDistance && !sensing.parcels.find( ({id: parcel_id}) => seenParcel.id == parcel_id )) {
+                agentData.parcels.delete(seenParcel.id);
+            }
+        }
     }
 })
 
@@ -46,7 +51,7 @@ socket.onSensing( async (sensing) => {
         
         for (let seenAgent of agentData.enemyAgents.values()) {
             // Previously seen agent is no longer in observation distance
-            if (distance(agentData.pos, {x: seenAgent.x, y: seenAgent.y}) < gameData.observationDistance && !sensing.agents.find( ({id: agent_id}) => seenAgent.id == agent_id ) ) {
+            if (distance(agentData.pos, {x: seenAgent.x, y: seenAgent.y}) > gameData.observationDistance && !sensing.agents.find( ({id: agent_id}) => seenAgent.id == agent_id ) ) {
                     agentData.enemyAgents.delete(seenAgent.id);
             }
         }
