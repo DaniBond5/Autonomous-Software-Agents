@@ -75,11 +75,10 @@ function compute_pickup_utility(parcel) {
 
 function compute_deliver_utility() {
     let nearestDelivery = gameData.getNearestDeliveryPoint(agentData.pos);
-    let distanceToDelivery = distance(agentData.pos, nearestDelivery.x, nearestDelivery.y);
-    
+    let distanceToDelivery = distance(agentData.pos, {x: nearestDelivery.x, y: nearestDelivery.y});
+
     let numBaggedParcels = agentData.baggedParcels.size;
     let baggedScore = agentData.get_carried_score();
-
 
     // TODO: might be a good idea to add a bonus to make this option more appetising
     let decayFrequency = gameData.getDecayFrequency();
@@ -115,4 +114,4 @@ function compute_nearest_spawner_exploration_utility() {
         
 }
 
-export {optionGeneration}
+export {optionGeneration, compute_deliver_utility}
