@@ -48,7 +48,7 @@ function compute_pickup_utility(parcel) {
     let totalDistance = (distanceToParcel + distanceToNearestDelivery);
     let decayFrequency = gameData.getDecayFrequency();
     let baggedReward = agentData.get_carried_score();
-    for (let baggedParcel of agentData.baggedParcels) {
+    for (let baggedParcel of agentData.baggedParcels.values()) {
         let expectedParcelReward = baggedParcel.reward - decayFrequency * totalDistance;
 
         if (expectedParcelReward <= 0) {
