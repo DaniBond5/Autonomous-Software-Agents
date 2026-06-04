@@ -1,6 +1,6 @@
 import { socket } from "../connection.js";
-import { agentData, gameData } from "../Belief/Belief.js";
-import { distance } from "../Belief/GameData.js";
+import { agentData, gameData } from "../belief/Belief.js";
+import { distance } from "../belief/GameData.js";
 
 const GO_DELIVER_THRESHOLD = 5;     // threshold to make the agent go deliver parcels if he has X * averageParcelReward parcels in its bag
 
