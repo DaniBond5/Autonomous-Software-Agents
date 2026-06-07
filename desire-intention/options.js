@@ -14,7 +14,7 @@ async function optionGeneration(){
 
     for (let p of agentData.parcels.values()) {
         if (!p.carriedBy && p.reward > 5 ) {
-            let utility = compute_pickup_utility(p);
+            let utility = computePickupUtility(p);
             if (utility > 0) {
                 agentData.options.push(['go_pick_up', p, utility]);
             }
@@ -22,12 +22,12 @@ async function optionGeneration(){
     }
 
     if ((agentData.baggedParcels.size > 0) || (gameData.getDecayFrequency() > 0) || (agentData.get_carried_score() > gameData.parcelAverageReward * GO_DELIVER_THRESHOLD)) {
-        let deliveryInfo = compute_deliver_utility()
+        let deliveryInfo = computeDeliverUtility()
         agentData.options.push(['go_deliver', deliveryInfo[0].x, deliveryInfo[0].y, deliveryInfo[1]]);
     }
 
     if (agentData.parcels.size === 0 && agentData.baggedParcels.size === 0) {
-        let explorationInfo = compute_nearest_spawner_exploration_utility();
+        let explorationInfo = computeNearestSpawnerExplorationUtility();
         agentData.options.push(['go_to_spawner', explorationInfo[0].x, explorationInfo[0].y, explorationInfo[1]]);
     }
 }
@@ -37,7 +37,7 @@ async function optionGeneration(){
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel} parcel 
  */
 // TODO: Add edge case where parcel decay is disabled.
-function compute_pickup_utility(parcel) {
+function computePickupUtility(parcel) {
     let numBaggedParcels = agentData.baggedParcels.size;
     let distanceToParcel = distance(agentData.pos, {x: parcel.x, y: parcel.y});
     
@@ -57,9 +57,9 @@ function compute_pickup_utility(parcel) {
         }
     }
 
-    let ExpectedParcelReward = parcel.reward - decayFrequency * distanceToParcel;
-    let ExpectedBaggedReward = baggedReward - ((decayFrequency * distanceToParcel) * numBaggedParcels);
-    let utility = (ExpectedParcelReward + ExpectedBaggedReward) - (decayFrequency * distanceToNearestDelivery) * (numBaggedParcels + 1);
+    let expectedParcelReward = parcel.reward - decayFrequency * distanceToParcel;
+    let expectedBaggedReward = baggedReward - ((decayFrequency * distanceToParcel) * numBaggedParcels);
+    let utility = (expectedParcelReward + expectedBaggedReward) - (decayFrequency * distanceToNearestDelivery) * (numBaggedParcels + 1);
 
     /**
      * TODO: Add a penalty to the utility if an enemy agent is close to the parcel
@@ -73,7 +73,7 @@ function compute_pickup_utility(parcel) {
     return utility;
 }
 
-function compute_deliver_utility() {
+function computeDeliverUtility() {
     let nearestDelivery = gameData.getNearestDeliveryPoint(agentData.pos);
     let distanceToDelivery = distance(agentData.pos, {x: nearestDelivery.x, y: nearestDelivery.y});
 
@@ -83,8 +83,8 @@ function compute_deliver_utility() {
     // TODO: might be a good idea to add a bonus to make this option more appetising
     let decayFrequency = gameData.getDecayFrequency();
     for (let parcel of agentData.baggedParcels.values()) {
-        let ExpectedReward = parcel.reward - (decayFrequency * distanceToDelivery);
-        if (ExpectedReward <= 0) {
+        let expectedReward = parcel.reward - (decayFrequency * distanceToDelivery);
+        if (expectedReward <= 0) {
             numBaggedParcels --;
             baggedScore -= parcel.reward;
         }
@@ -94,19 +94,19 @@ function compute_deliver_utility() {
     return [nearestDelivery, utility];
 }
 
-function compute_nearest_spawner_exploration_utility() {
+function computeNearestSpawnerExplorationUtility() {
     let outOfSightSpawners = Array.from(gameData.parcelSpawningMap)
         .filter( spawner => {
             return distance(agentData.pos, {x: spawner.x, y: spawner.y}) > gameData.observationDistance;
         })
-        if (outOfSightSpawners.size === 0) return 0;    // 0 all other utilities should be positive, some testing needed to see if 0 is the right choice
+        if (outOfSightSpawners.length === 0) return [null, 0];    // 0 all other utilities should be positive, some testing needed to see if 0 is the right choice
 
         let nearestSpawner = gameData.getNearestSpawningPoint(agentData.pos);
         let distanceToSpawner = distance(agentData.pos, nearestSpawner);
         let decayFrequency = gameData.getDecayFrequency();
 
         let expectedReward = (gameData.parcelAverageReward - (distanceToSpawner * decayFrequency));
-        if (expectedReward <= 0) return 0;
+        if (expectedReward <= 0) return [null, 0];
 
         // TODO: might be useful to add a malus here.
         let utility = (expectedReward) / distanceToSpawner;
@@ -114,4 +114,4 @@ function compute_nearest_spawner_exploration_utility() {
         
 }
 
-export {optionGeneration, compute_deliver_utility}
+export {optionGeneration, computeDeliverUtility}
