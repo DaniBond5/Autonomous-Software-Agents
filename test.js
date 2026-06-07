@@ -1,5 +1,4 @@
-import { agentData } from "./Belief/belief.js"; 
-import { gameData } from "./Belief/belief.js";
+import { agentData, gameData } from "./belief/index.js";
 
 console.log(" Avvio del test");
 

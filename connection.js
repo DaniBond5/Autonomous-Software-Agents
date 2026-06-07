@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { DjsConnect } from '@unitn-asa/deliveroo-js-sdk';
-import { AgentData } from "./Belief/AgentData.js";
+import { AgentData } from "./belief/AgentData.js";
 
 const socket = DjsConnect();
 
