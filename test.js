@@ -9,6 +9,7 @@ setInterval(() => {
     console.log("Width: ", gameData.mapWidth, " Height: ", gameData.mapHeight);
     //console.log(gameData.gameMap);
     console.log(gameData.parcelSpawningMap.size);
+    console.log("parcel decaying interval: ",gameData.parcelDecayingInterval);
 
     console.log("\nSTATO AGENTE");
     

@@ -5,6 +5,8 @@ function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
     return dx + dy;
 }
 
+const NO_PARCEL_DECAY_VALUE = 1000000;
+
 class GameData {
 
     /**
@@ -75,7 +77,12 @@ class GameData {
         this.observationDistance = playerConfig.observation_distance;
 
         const parcelsConfig = config.GAME.parcels
-        this.parcelDecayingInterval = parcelsConfig.decaying_event == '1s' ? 1000 : 1000000;
+        // TODO: there's also a 'frame' decaying interval, need to figure out its measure and add an initialization for that case
+        let decay = parcelsConfig.decaying_event;
+        if (decay.includes('s')) {
+            this.parcelDecayingInterval = Number(decay.substring(0, decay.indexOf('s')));
+        }
+        else if (decay === 'infinite') this.parcelDecayingInterval = NO_PARCEL_DECAY_VALUE;
         this.parcelAverageReward = parcelsConfig.reward_avg;
         this.parcelRewardVariance = parcelsConfig.reward_variance;
     }
@@ -138,4 +145,4 @@ class GameData {
     }
 }
 
-export{GameData, distance}
+export{GameData, distance, NO_PARCEL_DECAY_VALUE}
