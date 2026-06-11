@@ -1,4 +1,5 @@
-import { agentData, gameData } from "./belief/index.js";
+import { agentData, gameData } from "./belief/Belief.js";
+import { computeNearestSpawnerExplorationUtility } from "./desire-intention/options.js";
 
 console.log(" Avvio del test");
 
@@ -7,7 +8,7 @@ setInterval(() => {
     console.log("\nINFORMAZIONI MAPPA");
     console.log("Width: ", gameData.mapWidth, " Height: ", gameData.mapHeight);
     //console.log(gameData.gameMap);
-    console.log(gameData.parcelSpawmingMap.size);
+    console.log(gameData.parcelSpawningMap.size);
 
     console.log("\nSTATO AGENTE");
     
@@ -21,5 +22,9 @@ setInterval(() => {
     console.log(`Valore totale nello zaino: ${agentData.get_carried_score()}`);
 
     console.log("--------------------\n");
+
+    console.log("\nOption generation:");
+
+    console.log("nearest spawner utility: ", computeNearestSpawnerExplorationUtility());
 
 }, 5000);
