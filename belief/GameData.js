@@ -141,4 +141,4 @@ class GameData {
     }
 }
 
-export{GameData, distance, NO_PARCEL_DECAY_VALUE}
+export{GameData, NO_PARCEL_DECAY_VALUE}
