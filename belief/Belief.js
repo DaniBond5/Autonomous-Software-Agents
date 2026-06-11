@@ -15,8 +15,8 @@ socket.onYou( ({id, name, x, y, score}) => {
 
 
 socket.onSensing( async (sensing) => {
-    agentData.updateParcelsFromSensing(sensing.parcels, gameData.observationDistance);
-    agentData.updateAgentsFromSensing(sensing.agents, gameData.observationDistance);
+    agentData.updateParcelsFromSensing(sensing.parcels);
+    agentData.updateAgentsFromSensing(sensing.agents);
 })
 
 /**
