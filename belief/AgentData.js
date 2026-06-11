@@ -83,7 +83,7 @@ class AgentData{
     }
 
 
-    updateAgentsFromSensing(perceivedAgents, observationDistance) {
+    updateAgentsFromSensing(perceivedAgents) {
     
         const seenNow = new Set();
 
@@ -94,7 +94,7 @@ class AgentData{
             this.enemyAgents.set(a.id, a);
         }
 
-        for (const [id, agent] of this.enemyAgents.keys()) {
+        for (const id of this.enemyAgents.keys()) {
             if (!seenNow.has(id)) {
                 this.enemyAgents.delete(id);
             }
