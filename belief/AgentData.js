@@ -60,7 +60,7 @@ class AgentData{
     }
 
 
-    updateFromSensing(perceivedParcels, observationDistance) {
+    updateParcelsFromSensing(perceivedParcels, observationDistance) {
         
         const seenNow = new Set();
 
