@@ -40,8 +40,10 @@ class AgentData{
                 this.id = id;
                 this.name = name;
             }
-            this.pos.x = Math.round(x);
-            this.pos.y = Math.round(y);
+            if (x % 1 == 0 && y % 1 == 0) {
+                this.pos.x = x;
+                this.pos.y = y;
+            }
     }
 
     /**
