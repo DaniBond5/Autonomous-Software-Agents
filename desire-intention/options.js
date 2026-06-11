@@ -21,7 +21,7 @@ async function optionGeneration(){
         }
     }
 
-    if ((agentData.baggedParcels.size > 0) || (gameData.getDecayFrequency() > 0) || (agentData.get_carried_score() > gameData.parcelAverageReward * GO_DELIVER_THRESHOLD)) {
+    if ((agentData.baggedParcels.size > 0) || (gameData.getDecayFrequency() > 0) || (agentData.getCarriedScore() > gameData.parcelAverageReward * GO_DELIVER_THRESHOLD)) {
         let deliveryInfo = computeDeliverUtility()
         agentData.options.push(['go_deliver', deliveryInfo[0].x, deliveryInfo[0].y, deliveryInfo[1]]);
     }
@@ -49,7 +49,7 @@ function computePickupUtility(parcel) {
     
     let totalDistance = (distanceToParcel + distanceToNearestDelivery);
     let decayFrequency = gameData.getDecayFrequency();
-    let baggedReward = agentData.get_carried_score();
+    let baggedReward = agentData.getCarriedScore();
     for (let baggedParcel of agentData.baggedParcels.values()) {
         let expectedParcelReward = baggedParcel.reward - decayFrequency * totalDistance;
 
@@ -80,7 +80,7 @@ function computeDeliverUtility() {
     let distanceToDelivery = distance(agentData.pos, {x: nearestDelivery.x, y: nearestDelivery.y});
 
     let numBaggedParcels = agentData.baggedParcels.size;
-    let baggedScore = agentData.get_carried_score();
+    let baggedScore = agentData.getCarriedScore();
 
     // TODO: might be a good idea to add a bonus to make this option more appetising
     let decayFrequency = gameData.getDecayFrequency();

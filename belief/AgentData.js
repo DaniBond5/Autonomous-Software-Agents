@@ -1,3 +1,5 @@
+import { distance } from "../utils/geometry.js";
+
 class AgentData{
 
     constructor(){
@@ -49,18 +51,55 @@ class AgentData{
     /**
      * @returns total score of bagged parcels
      */
-    get_carried_score = () => {
-        let total = 0;
+    getCarriedScore() {
+        let score = 0;
         for (const parcel of this.baggedParcels.values()) {
-            if (!this.parcels.has(parcel.id) || parcel.reward <= 1){
-                this.baggedParcels.delete(parcel.id);
-                continue;
-            }
-            total += parcel.reward;
+            score += parcel.reward;
         }
-        return total;
+        return score;
     }
+
+
+    updateParcelsFromSensing(perceivedParcels, observationDistance) {
+        
+        const seenNow = new Set();
+
+        for (const p of perceivedParcels) {
+            this.parcels.set(p.id, p);
+            seenNow.add(p.id);
+            if (p.carriedBy === this.id) {
+                if (p.reward <= 1) this.baggedParcels.delete(p.id);
+                else this.baggedParcels.set(p.id, p);
+            }
+        }
+
+
+        for (const [id, parcel] of this.parcels) {
+            if (!seenNow.has(id) && distance(this.pos, parcel) < observationDistance) {
+                this.parcels.delete(id);
+                this.baggedParcels.delete(id);
+            }
+        }   
+    }
+
+
+    updateAgentsFromSensing(perceivedAgents, observationDistance) {
     
+        const seenNow = new Set();
+
+        for (const a of perceivedAgents) {
+            if (a.x == null || a.y == null) continue;
+            seenNow.add(a.id);
+            if (a.x % 1 != 0 || a.y % 1 != 0) continue;
+            this.enemyAgents.set(a.id, a);
+        }
+
+        for (const [id, agent] of this.enemyAgents) {
+            if (!seenNow.has(id) && distance(this.pos, agent) < observationDistance) {
+                this.enemyAgents.delete(id);
+            }
+        }
+    }
 }
 
 
