@@ -1,6 +1,6 @@
 import { distance } from "../utils/geometry.js";
 
-const NO_PARCEL_DECAY_VALUE = 1000000;
+const NO_PARCEL_DECAY_VALUE = 0;
 
 class GameData {
 
@@ -122,8 +122,7 @@ class GameData {
      * @returns the parcel decay frequency
      */
     getDecayFrequency(){
-        if (this.parcelDecayingInterval == 0) return 0;
-        if (this.parcelDecayingInterval == NO_PARCEL_DECAY_VALUE) return NO_PARCEL_DECAY_VALUE;
+        if (this.parcelDecayingInterval == NO_PARCEL_DECAY_VALUE) return 0;
         return this.movementDuration / this.parcelDecayingInterval;
     }
 
