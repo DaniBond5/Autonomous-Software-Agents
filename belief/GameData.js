@@ -123,7 +123,7 @@ class GameData {
      */
     getDecayFrequency(){
         if (this.parcelDecayingInterval == NO_PARCEL_DECAY_VALUE) return 0;
-        return this.movementDuration / this.parcelDecayingInterval;
+        return (this.movementDuration / this.parcelDecayingInterval) / 1000;
     }
 
     /**
