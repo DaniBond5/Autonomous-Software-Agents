@@ -44,7 +44,7 @@ socket.onSensing( async (sensing) => {
  */
 socket.onSensing( async (sensing) => {
     for (const a of sensing.agents) {
-        if (!a.x || !a.y) continue;
+        if (a.x == null || a.y == null) continue;
         if (a.x % 1 != 0 || a.y % 1 != 0) continue;
 
         agentData.enemyAgents.set(a.id, a);
