@@ -1,6 +1,7 @@
 import { AgentData } from "./AgentData.js";
 import { socket } from "../connection.js";
-import { distance, GameData } from "./GameData.js";
+import { GameData } from "./GameData.js";
+import { distance } from "../utils/geometry.js";
 
 const agentData = new AgentData();
 const gameData = new GameData();
