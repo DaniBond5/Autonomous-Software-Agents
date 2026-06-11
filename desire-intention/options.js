@@ -28,7 +28,9 @@ async function optionGeneration(){
 
     if (agentData.parcels.size === 0 && agentData.baggedParcels.size === 0) {
         let explorationInfo = computeNearestSpawnerExplorationUtility();
-        agentData.options.push(['go_to_spawner', explorationInfo[0].x, explorationInfo[0].y, explorationInfo[1]]);
+        if (explorationInfo[0] !== null) {
+            agentData.options.push(['go_to_spawner', explorationInfo[0].x, explorationInfo[0].y, explorationInfo[1]]);
+        }
     }
 }
 
