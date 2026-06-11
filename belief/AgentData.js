@@ -60,7 +60,7 @@ class AgentData{
     }
 
 
-    updateParcelsFromSensing(perceivedParcels, observationDistance) {
+    updateParcelsFromSensing(perceivedParcels) {
         
         const seenNow = new Set();
 
@@ -74,8 +74,8 @@ class AgentData{
         }
 
 
-        for (const [id, parcel] of this.parcels) {
-            if (!seenNow.has(id) && distance(this.pos, parcel) < observationDistance) {
+        for (const id of this.parcels.keys()) {
+            if (!seenNow.has(id)) {
                 this.parcels.delete(id);
                 this.baggedParcels.delete(id);
             }
@@ -94,8 +94,8 @@ class AgentData{
             this.enemyAgents.set(a.id, a);
         }
 
-        for (const [id, agent] of this.enemyAgents) {
-            if (!seenNow.has(id) && distance(this.pos, agent) < observationDistance) {
+        for (const [id, agent] of this.enemyAgents.keys()) {
+            if (!seenNow.has(id)) {
                 this.enemyAgents.delete(id);
             }
         }
