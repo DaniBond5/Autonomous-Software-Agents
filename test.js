@@ -20,7 +20,7 @@ setInterval(() => {
     console.log('Dati sui pacchi visti: ', agentData.parcels);
     console.log(`Pacchi nello zaino: ${agentData.baggedParcels.size}`);
     
-    console.log(`Valore totale nello zaino: ${agentData.get_carried_score()}`);
+    console.log(`Valore totale nello zaino: ${agentData.getCarriedScore()}`);
 
     console.log("--------------------\n");
 
