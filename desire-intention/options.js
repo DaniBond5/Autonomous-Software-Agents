@@ -3,6 +3,7 @@ import { agentData, gameData } from "../belief/Belief.js";
 import { distance } from "../utils/geometry.js";
 
 const GO_DELIVER_THRESHOLD = 5;     // threshold to make the agent go deliver parcels if he has X * averageParcelReward parcels in its bag
+const PARCEL_REWARD_THRESHOLD = 5;
 
 async function optionGeneration(){
     agentData.options = []; // TODO: think about this
@@ -13,7 +14,7 @@ async function optionGeneration(){
      */
 
     for (let parcel of agentData.parcels.values()) {
-        if (!parcel.carriedBy && parcel.reward > 5) generatePickUpOption(parcel);
+        if (!parcel.carriedBy && parcel.reward > PARCEL_REWARD_THRESHOLD) generatePickUpOption(parcel);
     }
 
     if ((agentData.baggedParcels.size > 0) && ( (gameData.getDecayFrequency() > 0) || (agentData.getCarriedScore() > gameData.parcelAverageReward * GO_DELIVER_THRESHOLD) )) {
