@@ -11,6 +11,6 @@ export class Option {
      * @param {import("../../belief/GameData")} gameData 
      */
     computeUtility(agentData, gameData) {
-        throw new Error("Il metodo 'computeUtility()' deve essere implementato.");
+        throw new Error("The 'computeUtility()' method must be implemented.");
     }
 }
