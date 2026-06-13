@@ -1,5 +1,6 @@
 import { socket } from "./connection.js";
 import { beliefs } from "./bdi/beliefs.js";
+import { generateDesires } from "./bdi/desires.js";
 
 beliefs.init(socket);
 
@@ -25,5 +26,8 @@ setInterval(() => {
     console.log(`Valore totale nello zaino: ${beliefs.parcels.carriedScore()}`);
 
     console.log("--------------------\n");
+
+    console.log("\nDESIDERI:");
+    console.log(generateDesires(beliefs));
 
 }, 5000);
