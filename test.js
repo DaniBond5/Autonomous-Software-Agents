@@ -1,31 +1,29 @@
-import { agentData, gameData } from "./belief/Belief.js";
-import { computeNearestSpawnerExplorationUtility } from "./desire-intention/options.js";
+import { socket } from "./connection.js";
+import { beliefs } from "./bdi/beliefs.js";
+
+beliefs.init(socket);
 
 console.log(" Avvio del test");
 
 setInterval(() => {
-    
+
     console.log("\nINFORMAZIONI MAPPA");
-    console.log("Width: ", gameData.mapWidth, " Height: ", gameData.mapHeight);
-    //console.log(gameData.gameMap);
-    console.log(gameData.parcelSpawningMap.size);
-    console.log("parcel decaying interval: ",gameData.parcelDecayingInterval);
+    console.log("Width: ", beliefs.world.width, " Height: ", beliefs.world.height);
+    //console.log(beliefs.world.tiles);
+    console.log(beliefs.world.spawners.size);
+    console.log("parcel decaying interval: ", beliefs.world.decayInterval);
 
     console.log("\nSTATO AGENTE");
-    
-    console.log(`Nome: ${agentData.name || "Sconosciuto"} (ID: ${agentData.id || "N/A"})`);
-    console.log(`Posizione attuale: x: ${agentData.pos.x}, y: ${agentData.pos.y}`);
-    
-    console.log(`Pacchi sulla mappa (visti): ${agentData.parcels.size}`);
-    console.log('Dati sui pacchi visti: ', agentData.parcels);
-    console.log(`Pacchi nello zaino: ${agentData.baggedParcels.size}`);
-    
-    console.log(`Valore totale nello zaino: ${agentData.getCarriedScore()}`);
+
+    console.log(`Nome: ${beliefs.me.name || "Sconosciuto"} (ID: ${beliefs.me.id || "N/A"})`);
+    console.log(`Posizione attuale: x: ${beliefs.me.pos.x}, y: ${beliefs.me.pos.y}`);
+
+    console.log(`Pacchi sulla mappa (visti): ${beliefs.parcels.visible.size}`);
+    console.log('Dati sui pacchi visti: ', beliefs.parcels.visible);
+    console.log(`Pacchi nello zaino: ${beliefs.parcels.carried.size}`);
+
+    console.log(`Valore totale nello zaino: ${beliefs.parcels.carriedScore()}`);
 
     console.log("--------------------\n");
-
-    console.log("\nOption generation:");
-
-    console.log("nearest spawner utility: ", computeNearestSpawnerExplorationUtility());
 
 }, 5000);
