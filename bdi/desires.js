@@ -1,5 +1,21 @@
 import { distance } from "../utils/geometry.js";
 
+/**
+ * @typedef {{x: number, y: number}} Point
+ */
+
+/**
+ * A desire is a candidate goal the agent could pursue. Every desire exposes
+ * the SAME `target`, so the intention layer can move toward it without knowing
+ * its type. The terminal action (pickup / putdown / nothing) is dispatched on `type`.
+ *
+ * @typedef {Object} Desire
+ * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'} type
+ * @property {Point}  target   - where to move
+ * @property {number} utility  - score from the utility functions
+ * @property {string} [id]     - parcel id, ONLY for go_pick_up (used for intention revision)
+ */
+
 const GO_DELIVER_THRESHOLD = 5;     // threshold to make the agent go deliver parcels if he has X * averageParcelReward parcels in its bag
 const PARCEL_REWARD_THRESHOLD = 5;
 
@@ -95,7 +111,7 @@ export function spawnerExplorationUtility(beliefs) {
  * Generates the current set of desires as plain objects, given the beliefs.
  * Desires are ephemeral data, regenerated every cycle.
  * @param {import("./beliefs.js").beliefs} beliefs
- * @returns {Array<Object>} the generated desires.
+ * @returns {Desire[]} the generated desires.
  */
 export function generateDesires(beliefs) {
     const desires = [];
@@ -103,7 +119,7 @@ export function generateDesires(beliefs) {
     for (let parcel of beliefs.parcels.visible.values()) {
         if (!parcel.carriedBy && parcel.reward > PARCEL_REWARD_THRESHOLD) {
             let utility = pickUpUtility(beliefs, parcel);
-            if (utility > 0) desires.push({ type: 'go_pick_up', parcel, utility });
+            if (utility > 0) desires.push({ type: 'go_pick_up', target: { x: parcel.x, y: parcel.y }, utility, id: parcel.id });
         }
     }
 
@@ -111,7 +127,9 @@ export function generateDesires(beliefs) {
         let utility = deliverUtility(beliefs);
         if (utility > 0) {
             let deliveryPoint = beliefs.world.nearestDelivery(beliefs.me.pos);
-            desires.push({ type: 'go_deliver', deliveryPoint, utility });
+            if (deliveryPoint) {   // guard: never emit a desire without a valid target
+            desires.push({ type: 'go_deliver', target: { x: deliveryPoint.x, y: deliveryPoint.y }, utility });
+            }
         }
     }
 
@@ -119,7 +137,7 @@ export function generateDesires(beliefs) {
         let utility = spawnerExplorationUtility(beliefs);
         if (utility > 0) {
             let nearestSpawner = beliefs.world.nearestSpawner(beliefs.me.pos);
-            desires.push({ type: 'go_to_spawner', x: nearestSpawner.x, y: nearestSpawner.y, utility });
+            desires.push({ type: 'go_to_spawner', target: { x: nearestSpawner.x, y: nearestSpawner.y }, utility });
         }
     }
 
