@@ -32,9 +32,9 @@ export function expectedUtilityInfo(beliefs, dist) {
  * @returns {number} the utility for picking up the parcel.
  */
 export function pickUpUtility(beliefs, parcel) {
-    let distanceToParcel = distance(beliefs.me.pos, { x: parcel.x, y: parcel.y });
+    let distanceToParcel = distance(beliefs.me.pos, parcel);
     let nearestDelivery = beliefs.world.nearestDelivery(beliefs.me.pos);
-    let distanceToDelivery = distance(beliefs.me.pos, { x: nearestDelivery.x, y: nearestDelivery.y });
+    let distanceToDelivery = distance(beliefs.me.pos, nearestDelivery);
     let decayFrequency = beliefs.world.decayFrequency();
 
     let expectedInfo = expectedUtilityInfo(beliefs, (distanceToParcel + distanceToDelivery));
@@ -53,7 +53,7 @@ export function pickUpUtility(beliefs, parcel) {
  */
 export function deliverUtility(beliefs) {
     let nearestDelivery = beliefs.world.nearestDelivery(beliefs.me.pos);
-    let distanceToDelivery = distance(beliefs.me.pos, { x: nearestDelivery.x, y: nearestDelivery.y });
+    let distanceToDelivery = distance(beliefs.me.pos, nearestDelivery);
 
     let expectedInfo = expectedUtilityInfo(beliefs, distanceToDelivery);
     let expectedNumBaggedParcels = expectedInfo[0];
@@ -75,7 +75,7 @@ export function deliverUtility(beliefs) {
 export function spawnerExplorationUtility(beliefs) {
     let outOfSightSpawners = Array.from(beliefs.world.spawners.values())
         .filter(spawner => {
-            return distance(beliefs.me.pos, { x: spawner.x, y: spawner.y }) > beliefs.world.observationDistance;
+            return distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance;
         });
     if (outOfSightSpawners.length === 0) return 0;    // 0 all other utilities should be positive, some testing needed to see if 0 is the right choice
 
