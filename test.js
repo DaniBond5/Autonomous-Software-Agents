@@ -1,6 +1,7 @@
 import { socket } from "./connection.js";
 import { beliefs } from "./bdi/beliefs.js";
 import { generateDesires } from "./bdi/desires.js";
+import { BFS } from "./utils/geometry.js";
 
 beliefs.init(socket);
 
@@ -30,4 +31,11 @@ setInterval(() => {
     console.log("\nDESIDERI:");
     console.log(generateDesires(beliefs));
 
-}, 5000);
+    console.log("BFS");
+    let aDeliveryTile = Array.from(beliefs.world.deliveries.values()).shift();
+    console.log("BFS goal: ", aDeliveryTile);
+    console.log("Ricerca BFS: ", BFS(beliefs, aDeliveryTile));
+
+}, 3000);
+
+
