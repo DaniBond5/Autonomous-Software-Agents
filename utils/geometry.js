@@ -20,14 +20,15 @@ export function distance({x: x1, y: y1}, {x: x2, y: y2}) {
  * If goalTile is not found by the search, false is returned.
  * @param {import("../bdi/beliefs.js").beliefs} beliefs 
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} goalTile 
- * @returns false if search has failed, or the path to the goal tile given the agent's current position.
+ * @returns false if unreachable, otherwise the path as an array of tiles (empty if already at the goal)
  */
 export function BFS(beliefs, goalTile) {
     if(!beliefs || !goalTile) return false;
     if (!isPositionTraversable(beliefs, goalTile)) return false
 
     let startingPosition = beliefs.me.pos;
-    if (goalTile.x == startingPosition.x && goalTile.y == startingPosition.y) return goalTile;
+    // already at the goal: empty path (zero steps), keeps the return type uniform
+    if (goalTile.x == startingPosition.x && goalTile.y == startingPosition.y) return [];
 
     let frontier = [];
     frontier.push({x: startingPosition.x, y: startingPosition.y, path: []});
