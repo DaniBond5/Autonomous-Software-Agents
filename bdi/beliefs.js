@@ -39,6 +39,16 @@ class Me {
         }
         this.score = score;
     }
+
+    /**
+     * Applies the authoritative position confirmed by a successful move.
+     * Used right after emitMove resolves, so re-planning the next cycle starts
+     * from the real tile instead of a stale onYou belief (prevents overshoot).
+     */
+    applyMovement({ x, y }) {
+        this.pos.x = Math.round(x);
+        this.pos.y = Math.round(y);
+    }
 }
 
 /**

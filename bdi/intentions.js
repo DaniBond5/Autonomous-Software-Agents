@@ -1,6 +1,9 @@
 import { generateDesires } from "./desires.js";
 import { BFS } from "../utils/geometry.js";
 
+const DEBUG = true; // set to false to silence all [agent] debug logs
+const dbg = (...args) => { if (DEBUG) console.log("[agent]", ...args); };
+
 /**
  * @typedef {{action:'move',dir:'up'|'down'|'left'|'right'}|{action:'pickup'}|{action:'putdown'}} Action
  */
@@ -45,15 +48,20 @@ function stepDir(a, b) {
  * Returns only the FIRST move of the path — the executor re-plans each cycle.
  */
 function navigateThen(terminal, intention, beliefs) {
-    const path = BFS(beliefs, { x: intention.target.x, y: intention.target.y });
-    if (path === false) {
-        console.log(`[plan] no path to (${intention.target.x},${intention.target.y})`);
-        return []; // unreachable → empty plan; executor will re-deliberate
-    }
-    if (path.length === 0) return terminal ? [terminal] : []; // already arrived
-
     const me = roundPos(beliefs.me.pos);
-    const dir = stepDir(me, path[0]); // path[0] is always adjacent to me
+    const path = BFS(beliefs, { x: intention.target.x, y: intention.target.y });
+
+    if (path === false) {
+        dbg(`${intention.type}: NO PATH  me(${me.x},${me.y}) -> target(${intention.target.x},${intention.target.y})`);
+        return [];
+    }
+    if (path.length === 0) {
+        dbg(`${intention.type}: ARRIVED at (${me.x},${me.y}) -> ${terminal ? terminal.action : 'idle'}`);
+        return terminal ? [terminal] : [];
+    }
+
+    const dir = stepDir(me, path[0]);
+    dbg(`${intention.type}: me(${me.x},${me.y}) -> next(${path[0].x},${path[0].y}) dir=${dir} | target(${intention.target.x},${intention.target.y}) dist=${path.length}`);
     if (dir === null) return terminal ? [terminal] : [];
     return [{ action: 'move', dir }];
 }
@@ -89,16 +97,25 @@ export function planFor(intention, beliefs) {
 /* EXECUTION: do it (only this layer knows the SDK)                   */
 /* ------------------------------------------------------------------ */
 
-/** Maps one abstract action to the SDK. @returns {Promise<boolean>} acted */
-async function executeAction(action, socket) {
+/**
+ * Maps one abstract action to the SDK. The 'move' case is the single point that
+ * emits movement, so it also owns the position sync: move and self-position update
+ * are one indivisible operation — no caller has to remember to sync.
+ * @returns {Promise<boolean>} acted
+ */
+async function executeAction(action, beliefs, socket) {
     switch (action.action) {
         case 'move': {
             const result = await socket.emitMove(action.dir);
-            if (!result) console.log(`[exec] move ${action.dir} failed`); // step 4 will retry
+            if (!result) {
+                dbg(`move ${action.dir} FAILED (blocked)`); // blocked; collision handling (next step) will replan
+                return false;
+            }
+            beliefs.me.applyMovement(result); // authoritative position from ack; avoids stale-belief overshoot
             return true;
         }
-        case 'pickup':  await socket.emitPickup();  console.log('[exec] pickup');  return true;
-        case 'putdown': await socket.emitPutdown(); console.log('[exec] putdown'); return true;
+        case 'pickup':  await socket.emitPickup();  dbg('PICKUP');  return true;
+        case 'putdown': await socket.emitPutdown(); dbg('PUTDOWN'); return true;
         default: return false;
     }
 }
@@ -114,5 +131,5 @@ async function executeAction(action, socket) {
 export async function executeIntention(beliefs, intention, socket) {
     const plan = planFor(intention, beliefs);
     if (plan.length === 0) return false;
-    return executeAction(plan[0], socket); // head only; re-plan next cycle
+    return executeAction(plan[0], beliefs, socket); // head only; re-plan next cycle
 }
