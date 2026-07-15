@@ -14,6 +14,17 @@ const roundPos = (p) => ({ x: Math.round(p.x), y: Math.round(p.y) });
 /* DELIBERATION: what to pursue                                       */
 /* ------------------------------------------------------------------ */
 
+/** Selects the desire with the highest utility from an existing set. */
+function selectBestDesire(desires) {
+    if (desires.length === 0) return null;
+
+    let best = desires[0];
+    for (const desire of desires) {
+        if (desire.utility > best.utility) best = desire;
+    }
+    return best;
+}
+
 /**
  * Out of all current desires, pick the one with the highest utility.
  * @param {import("./beliefs.js").beliefs} beliefs
@@ -21,13 +32,44 @@ const roundPos = (p) => ({ x: Math.round(p.x), y: Math.round(p.y) });
  */
 export function selectIntention(beliefs) {
     const desires = generateDesires(beliefs);
-    if (desires.length === 0) return null;
+    return selectBestDesire(desires);
+}
 
-    let best = desires[0];
-    for (const d of desires) {
-        if (d.utility > best.utility) best = d;
+/**
+ * Keeps the current intention while its goal is still valid, otherwise
+ * replaces it with the currently most useful desire.
+ * @param {import("./desires.js").Desire | null} currentIntention
+ * @param {import("./beliefs.js").beliefs} beliefs
+ * @returns {import("./desires.js").Desire | null}
+ */
+export function reviseIntention(currentIntention, beliefs) {
+    const desires = generateDesires(beliefs);
+
+    if (currentIntention) {
+        switch (currentIntention.type) {
+            case 'go_pick_up': {
+                const pickupStillAvailable = desires.some(desire =>
+                    desire.type === 'go_pick_up' && desire.id === currentIntention.id
+                );
+                if (pickupStillAvailable) return currentIntention;
+                break;
+            }
+            case 'go_deliver':
+                if (beliefs.parcels.carried.size > 0) return currentIntention;
+                break;
+            case 'go_to_spawner': {
+                const reachedTarget = beliefs.me.pos.x === currentIntention.target.x
+                    && beliefs.me.pos.y === currentIntention.target.y;
+                const pickupAvailable = desires.some(desire => desire.type === 'go_pick_up');
+                if (!reachedTarget && beliefs.parcels.carried.size === 0 && !pickupAvailable) {
+                    return currentIntention;
+                }
+                break;
+            }
+        }
     }
-    return best;
+
+    return selectBestDesire(desires);
 }
 
 /* ------------------------------------------------------------------ */
