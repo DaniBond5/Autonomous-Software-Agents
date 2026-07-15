@@ -108,8 +108,9 @@ export function spawnerExplorationUtility(beliefs, targetSpawner) {
  */
 export function generateDesires(beliefs) {
     const desires = [];
+    const knownParcels = beliefs.parcels.availableKnown(beliefs.world.decayInterval);
 
-    for (let parcel of beliefs.parcels.visible.values()) {
+    for (let parcel of knownParcels) {
         if (!parcel.carriedBy && parcel.reward > PARCEL_REWARD_THRESHOLD) {
             let utility = pickUpUtility(beliefs, parcel);
             if (utility > 0) desires.push({ type: 'go_pick_up', target: { x: parcel.x, y: parcel.y }, utility, id: parcel.id });
@@ -126,7 +127,8 @@ export function generateDesires(beliefs) {
         }
     }
 
-    if (beliefs.parcels.visible.size === 0 && beliefs.parcels.carried.size === 0) {
+    const hasPickupDesire = desires.some(desire => desire.type === 'go_pick_up');
+    if (!hasPickupDesire && beliefs.parcels.carried.size === 0) {
         let targetSpawner = Array.from(beliefs.world.spawners.values())
             .filter(spawner => distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance)
             .sort((a, b) => distance(beliefs.me.pos, a) - distance(beliefs.me.pos, b))
