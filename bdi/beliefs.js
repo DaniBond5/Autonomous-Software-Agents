@@ -52,7 +52,7 @@ class Me {
 }
 
 /**
- * Holds parcel data: parcels currently visible and parcels carried by the agent.
+ * Holds parcel data: parcels currently visible, remembered and carried by the agent.
  */
 class Parcels {
     constructor() {
@@ -62,31 +62,83 @@ class Parcels {
         this.visible = new Map();
 
         /**
+         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel & {observedAt: number}> }
+         */
+        this.known = new Map();
+
+        /**
          * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel> }
          */
         this.carried = new Map();
     }
 
-    update(perceivedParcels, meId) {
-
+    update(perceivedParcels, meId, mePos, observationDistance) {
+        this.visible.clear();
         const seenNow = new Set();
+        const observedAt = Date.now();
 
         for (const p of perceivedParcels) {
-            this.visible.set(p.id, p);
-            seenNow.add(p.id);
-            if (p.carriedBy === meId) {
-                if (p.reward <= 1) this.carried.delete(p.id);
-                else this.carried.set(p.id, p);
+            const parcel = { ...p };
+            this.visible.set(parcel.id, parcel);
+            seenNow.add(parcel.id);
+
+            if (!parcel.carriedBy && parcel.reward > 0) {
+                this.known.set(parcel.id, { ...parcel, observedAt });
+                this.carried.delete(parcel.id);
+            }
+            else if (parcel.carriedBy === meId) {
+                this.known.delete(parcel.id);
+                if (parcel.reward <= 1) this.carried.delete(parcel.id);
+                else this.carried.set(parcel.id, parcel);
+            }
+            else {
+                this.known.delete(parcel.id);
+                this.carried.delete(parcel.id);
             }
         }
 
-
-        for (const id of this.visible.keys()) {
+        for (const id of this.carried.keys()) {
             if (!seenNow.has(id)) {
-                this.visible.delete(id);
                 this.carried.delete(id);
             }
         }
+
+        const canInvalidateByPosition = mePos.x >= 0 && mePos.y >= 0 && observationDistance >= 0;
+        if (canInvalidateByPosition) {
+            for (const [id, parcel] of this.known) {
+                if (!seenNow.has(id) && distance(mePos, parcel) <= observationDistance) {
+                    this.known.delete(id);
+                }
+            }
+        }
+    }
+
+    /**
+     * Returns remembered free parcels with their reward estimated at the current time.
+     * Parcels whose estimated reward is no longer positive are forgotten.
+     * @param {number} decayInterval parcel decay interval in seconds
+     * @returns {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]}
+     */
+    availableKnown(decayInterval) {
+        const now = Date.now();
+        const available = [];
+
+        for (const [id, rememberedParcel] of this.known) {
+            let estimatedReward = rememberedParcel.reward;
+            if (decayInterval > 0) {
+                estimatedReward -= Math.floor((now - rememberedParcel.observedAt) / (decayInterval * 1000));
+            }
+
+            if (estimatedReward <= 0) {
+                this.known.delete(id);
+                continue;
+            }
+
+            const { observedAt, ...parcel } = rememberedParcel;
+            available.push({ ...parcel, reward: estimatedReward });
+        }
+
+        return available;
     }
 
     /**
@@ -286,7 +338,12 @@ class Beliefs {
         });
 
         socket.onSensing(async (sensing) => {
-            this.parcels.update(sensing.parcels, this.me.id);
+            this.parcels.update(
+                sensing.parcels,
+                this.me.id,
+                this.me.pos,
+                this.world.observationDistance
+            );
             this.agents.update(sensing.agents);
         });
 
