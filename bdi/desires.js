@@ -49,8 +49,8 @@ export function expectedUtilityInfo(beliefs, dist) {
  */
 export function pickUpUtility(beliefs, parcel) {
     let distanceToParcel = distance(beliefs.me.pos, parcel);
-    let nearestDelivery = beliefs.world.nearestDelivery(beliefs.me.pos);
-    let distanceToDelivery = distance(beliefs.me.pos, nearestDelivery);
+    let nearestDelivery = beliefs.world.nearestDelivery(parcel);
+    let distanceToDelivery = distance(parcel, nearestDelivery);
     let decayFrequency = beliefs.world.decayFrequency();
 
     let expectedInfo = expectedUtilityInfo(beliefs, (distanceToParcel + distanceToDelivery));
@@ -82,21 +82,14 @@ export function deliverUtility(beliefs) {
 }
 
 /**
- * Computes the exploration utility towards the nearest spawner.
- * Returns 0 when there is no out-of-sight spawner to explore or when the
- * expected reward is not positive.
+ * Computes the exploration utility towards the given target spawner.
+ * Returns 0 when the expected reward is not positive.
  * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} targetSpawner
  * @returns {number} the exploration utility (0 if not worth exploring).
  */
-export function spawnerExplorationUtility(beliefs) {
-    let outOfSightSpawners = Array.from(beliefs.world.spawners.values())
-        .filter(spawner => {
-            return distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance;
-        });
-    if (outOfSightSpawners.length === 0) return 0;    // 0 all other utilities should be positive, some testing needed to see if 0 is the right choice
-
-    let nearestSpawner = beliefs.world.nearestSpawner(beliefs.me.pos);
-    let distanceToSpawner = distance(beliefs.me.pos, nearestSpawner);
+export function spawnerExplorationUtility(beliefs, targetSpawner) {
+    let distanceToSpawner = distance(beliefs.me.pos, targetSpawner);
     let decayFrequency = beliefs.world.decayFrequency();
 
     let expectedReward = (beliefs.world.avgReward - (distanceToSpawner * decayFrequency));
@@ -134,10 +127,15 @@ export function generateDesires(beliefs) {
     }
 
     if (beliefs.parcels.visible.size === 0 && beliefs.parcels.carried.size === 0) {
-        let utility = spawnerExplorationUtility(beliefs);
-        if (utility > 0) {
-            let nearestSpawner = beliefs.world.nearestSpawner(beliefs.me.pos);
-            desires.push({ type: 'go_to_spawner', target: { x: nearestSpawner.x, y: nearestSpawner.y }, utility });
+        let targetSpawner = Array.from(beliefs.world.spawners.values())
+            .filter(spawner => distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance)
+            .sort((a, b) => distance(beliefs.me.pos, a) - distance(beliefs.me.pos, b))
+            .shift();
+        if (targetSpawner) {
+            let utility = spawnerExplorationUtility(beliefs, targetSpawner);
+            if (utility > 0) {
+                desires.push({ type: 'go_to_spawner', target: { x: targetSpawner.x, y: targetSpawner.y }, utility });
+            }
         }
     }
 
