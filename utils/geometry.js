@@ -10,45 +10,97 @@ export function distance({x: x1, y: y1}, {x: x2, y: y2}) {
     return dx + dy;
 }
 
+const directionalTiles = {
+    '↑': { dx: 0, dy: 1 },
+    '→': { dx: 1, dy: 0 },
+    '↓': { dx: 0, dy: -1 },
+    '←': { dx: -1, dy: 0 },
+};
+
+const positionKey = ({ x, y }) => `${x},${y}`;
+
 /**
- * TODO: initial version, there may be a simpler way to do this.
- * This function performs a Breadth First Search given the beliefs of an agent and a goal tile.
- * If either the beliefs or the goal tile are undefined, it returns false.
- * If the given goal tile is not traversable, it returns false.
- * If goalTile corresponds to the agent's current position it returns the goalTile.
- * If during the search the goal tile has been found, an array containing the sequence of tiles visited is returned.
- * If goalTile is not found by the search, false is returned.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs 
- * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} goalTile 
- * @returns false if unreachable, otherwise the path as an array of tiles (empty if already at the goal)
+ * @typedef {Object} ShortestPaths
+ * @property {{x: number, y: number}} start
+ * @property {Map<string, number>} distances
+ * @property {Map<string, {x: number, y: number}>} predecessors
  */
-export function BFS(beliefs, goalTile) {
-    if(!beliefs || !goalTile) return false;
-    if (!isPositionTraversable(beliefs, goalTile)) return false
 
-    let startingPosition = beliefs.me.pos;
-    // already at the goal: empty path (zero steps), keeps the return type uniform
-    if (goalTile.x == startingPosition.x && goalTile.y == startingPosition.y) return [];
+/**
+ * Computes shortest paths from one position to every reachable tile.
+ * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {{x: number, y: number}} start
+ * @returns {ShortestPaths | null}
+ */
+export function shortestPathsFrom(beliefs, start) {
+    if (!beliefs || !start || !isPositionTraversable(beliefs, start)) return null;
 
-    let frontier = [];
-    frontier.push({x: startingPosition.x, y: startingPosition.y, path: []});
-    let reached = new Set();
-    reached.add(`${startingPosition.x},${startingPosition.y}`);
-    
-    while(frontier.length > 0) {
-        const {x, y, path} = frontier.shift();
+    const startingPosition = { x: start.x, y: start.y };
+    const startKey = positionKey(startingPosition);
+    const distances = new Map([[startKey, 0]]);
+    const predecessors = new Map();
+    const frontier = [startingPosition];
+    let frontierIndex = 0;
 
-        const neighbors = getNeighbors(beliefs, {x: x, y: y});
+    while (frontierIndex < frontier.length) {
+        const current = frontier[frontierIndex++];
+        const currentDistance = distances.get(positionKey(current));
 
-        for (const neighbor of neighbors) {
-            if (neighbor.x == goalTile.x && neighbor.y == goalTile.y) return [...path, {x: goalTile.x, y: goalTile.y}];
-            if (!reached.has(`${neighbor.x},${neighbor.y}`)) {
-                reached.add(`${neighbor.x},${neighbor.y}`);
-                frontier.push({x: neighbor.x, y: neighbor.y, path: [...path, {x: neighbor.x, y: neighbor.y}]});
-            }
+        for (const neighbor of getNeighbors(beliefs, current)) {
+            const neighborKey = positionKey(neighbor);
+            if (distances.has(neighborKey)) continue;
+
+            distances.set(neighborKey, currentDistance + 1);
+            predecessors.set(neighborKey, current);
+            frontier.push(neighbor);
         }
     }
-    return false;
+
+    return { start: startingPosition, distances, predecessors };
+}
+
+/**
+ * Returns the shortest-path distance to a target from an existing search.
+ * @param {ShortestPaths | null} search
+ * @param {{x: number, y: number}} target
+ * @returns {number} path length, or Infinity when the target is unreachable
+ */
+export function distanceFromSearch(search, target) {
+    if (!search || !target) return Infinity;
+    return search.distances.get(positionKey(target)) ?? Infinity;
+}
+
+/**
+ * Reconstructs the shortest path to a target from an existing search.
+ * @param {ShortestPaths | null} search
+ * @param {{x: number, y: number}} target
+ * @returns {false | {x: number, y: number}[]} false if unreachable, otherwise the path (empty at start)
+ */
+export function pathFromSearch(search, target) {
+    if (!Number.isFinite(distanceFromSearch(search, target))) return false;
+
+    const path = [];
+    const startKey = positionKey(search.start);
+    let current = { x: target.x, y: target.y };
+
+    while (positionKey(current) !== startKey) {
+        path.push(current);
+        current = search.predecessors.get(positionKey(current));
+    }
+
+    return path.reverse();
+}
+
+/**
+ * Performs a Breadth First Search from an optional starting position to a goal.
+ * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} goalTile
+ * @param {{x: number, y: number}} [startingPosition=beliefs.me.pos]
+ * @returns {false | {x: number, y: number}[]} false if unreachable, otherwise the path (empty at the goal)
+ */
+export function BFS(beliefs, goalTile, startingPosition = beliefs?.me?.pos) {
+    if (!goalTile) return false;
+    return pathFromSearch(shortestPathsFrom(beliefs, startingPosition), goalTile);
 }
 
 /**
@@ -61,6 +113,24 @@ export function isPositionTraversable(beliefs, {x: positionX, y: positionY}) {
     if (!beliefs.world.tiles.has(`${positionX},${positionY}`)) return false;
     if (beliefs.world.tiles.get(`${positionX},${positionY}`).type == 0 ) return false;
     return positionX >= 0 && positionX < beliefs.world.width && positionY >= 0 && positionY < beliefs.world.height;
+}
+
+/**
+ * Checks whether a move follows map adjacency, traversability and destination direction.
+ * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {{x: number, y: number}} from
+ * @param {{x: number, y: number}} to
+ * @returns {boolean}
+ */
+export function isMoveAllowed(beliefs, from, to) {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) + Math.abs(dy) !== 1 || !isPositionTraversable(beliefs, to)) return false;
+
+    const destinationDirection = directionalTiles[beliefs.world.tiles.get(positionKey(to)).type];
+    return !destinationDirection
+        || dx !== -destinationDirection.dx
+        || dy !== -destinationDirection.dy;
 }
 
 /**
@@ -82,8 +152,9 @@ export function getNeighbors(beliefs, {x: positionX, y: positionY}) {
     for (const direction of directions) {
         let neighborX = positionX + direction.dx;
         let neighborY = positionY + direction.dy;
+        const neighbor = { x: neighborX, y: neighborY };
 
-        if(isPositionTraversable(beliefs, {x: neighborX, y: neighborY})) neighbors.push({x: neighborX, y: neighborY});
+        if (isMoveAllowed(beliefs, { x: positionX, y: positionY }, neighbor)) neighbors.push(neighbor);
     }
     return neighbors;
 }
