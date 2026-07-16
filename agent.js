@@ -20,6 +20,7 @@ async function agentLoop() {
             ? planNextAction(currentIntention, beliefs)
             : null;
         const outcome = await executeAction(action, beliefs, socket);
+        beliefs.parcels.reconcileActionOutcome(outcome, beliefs.me.id, beliefs.me.pos);
         if (outcome.status !== 'succeeded') await sleep(200); // idle or failed action — don't spin
     }
 }
