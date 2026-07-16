@@ -114,6 +114,55 @@ class Parcels {
     }
 
     /**
+     * Reconciles parcel beliefs with a successful pickup or putdown outcome.
+     * @param {{status: string, action: {action: string} | null, result: *}} outcome
+     * @param {string} meId
+     * @param {{x: number, y: number}} mePos
+     */
+    reconcileActionOutcome(outcome, meId, mePos) {
+        const actionType = outcome?.action?.action;
+        if (outcome?.status !== 'succeeded'
+            || (actionType !== 'pickup' && actionType !== 'putdown')
+            || !Array.isArray(outcome.result)) return;
+
+        for (const resultParcel of outcome.result) {
+            if (!resultParcel || typeof resultParcel !== 'object' || typeof resultParcel.id !== 'string') continue;
+
+            const id = resultParcel.id;
+            if (actionType === 'putdown') {
+                this.visible.delete(id);
+                this.known.delete(id);
+                this.carried.delete(id);
+                continue;
+            }
+
+            const storedParcel = this.visible.get(id)
+                ?? this.known.get(id)
+                ?? this.carried.get(id);
+            const parcel = storedParcel ? { ...storedParcel } : {};
+            for (const [field, value] of Object.entries(resultParcel)) {
+                if (value !== undefined) parcel[field] = value;
+            }
+
+            this.visible.delete(id);
+            this.known.delete(id);
+
+            const hasCurrentPosition = Number.isFinite(mePos?.x) && Number.isFinite(mePos?.y)
+                && mePos.x >= 0 && mePos.y >= 0;
+            if (hasCurrentPosition) {
+                parcel.x = mePos.x;
+                parcel.y = mePos.y;
+            }
+
+            if (!meId || !Number.isFinite(parcel.reward)
+                || !Number.isFinite(parcel.x) || !Number.isFinite(parcel.y)) continue;
+
+            delete parcel.observedAt;
+            this.carried.set(id, { ...parcel, carriedBy: meId });
+        }
+    }
+
+    /**
      * Returns remembered free parcels with their reward estimated at the current time.
      * Parcels whose estimated reward is no longer positive are forgotten.
      * @param {number} decayInterval parcel decay interval in seconds

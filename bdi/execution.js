@@ -2,28 +2,77 @@ const DEBUG = true; // set to false to silence all [agent] debug logs
 const dbg = (...args) => { if (DEBUG) console.log("[agent]", ...args); };
 
 /**
+ * @typedef {Object} ActionOutcome
+ * @property {'idle'|'succeeded'|'failed'} status
+ * @property {import("./planning.js").Action | null} action
+ * @property {*} result original result returned by the server, or null
+ * @property {*} [error] error raised by the SDK call
+ */
+
+function sdkFailure(action, error) {
+    const message = error instanceof Error ? error.message : String(error);
+    dbg(`${action.action} FAILED (${message})`);
+    return { status: 'failed', action, result: null, error };
+}
+
+/**
  * Executes one planned action through the SDK.
  * Movement and self-position synchronization remain one operation.
  * @param {import("./planning.js").Action | null} action
  * @param {import("./beliefs.js").beliefs} beliefs
  * @param {object} socket
- * @returns {Promise<boolean>} true if an action was executed
+ * @returns {Promise<ActionOutcome>}
  */
 export async function executeAction(action, beliefs, socket) {
-    if (!action) return false;
+    if (!action) return { status: 'idle', action: null, result: null };
 
     switch (action.action) {
         case 'move': {
-            const result = await socket.emitMove(action.dir);
-            if (!result) {
+            let result;
+            try {
+                result = await socket.emitMove(action.dir);
+            }
+            catch (error) {
+                return sdkFailure(action, error);
+            }
+            if (result === false) {
                 dbg(`move ${action.dir} FAILED (blocked)`);
-                return false;
+                return { status: 'failed', action, result };
             }
             beliefs.me.applyMovement(result);
-            return true;
+            return { status: 'succeeded', action, result };
         }
-        case 'pickup':  await socket.emitPickup();  dbg('PICKUP');  return true;
-        case 'putdown': await socket.emitPutdown(); dbg('PUTDOWN'); return true;
-        default: return false;
+        case 'pickup': {
+            let result;
+            try {
+                result = await socket.emitPickup();
+            }
+            catch (error) {
+                return sdkFailure(action, error);
+            }
+            if (!Array.isArray(result) || result.length === 0) {
+                dbg('pickup FAILED (no parcels)');
+                return { status: 'failed', action, result };
+            }
+            dbg('PICKUP');
+            return { status: 'succeeded', action, result };
+        }
+        case 'putdown': {
+            let result;
+            try {
+                result = await socket.emitPutdown();
+            }
+            catch (error) {
+                return sdkFailure(action, error);
+            }
+            if (!Array.isArray(result) || result.length === 0) {
+                dbg('putdown FAILED (no parcels)');
+                return { status: 'failed', action, result };
+            }
+            dbg('PUTDOWN');
+            return { status: 'succeeded', action, result };
+        }
+        default:
+            return { status: 'failed', action, result: null };
     }
 }
