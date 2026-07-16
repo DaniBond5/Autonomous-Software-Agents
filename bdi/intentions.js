@@ -31,9 +31,21 @@ export function reviseIntention(currentIntention, beliefs, desires) {
                 if (pickupStillAvailable) return currentIntention;
                 break;
             }
-            case 'go_deliver':
-                if (beliefs.parcels.carried.size > 0) return currentIntention;
+            case 'go_deliver': {
+                if (beliefs.parcels.carried.size === 0) break;
+
+                const currentDelivery = desires.find(desire => desire.type === 'go_deliver');
+                const bestPickup = selectBestDesire(
+                    desires.filter(desire => desire.type === 'go_pick_up')
+                );
+
+                // Delivery persists unless a current pickup is strictly more useful.
+                if (currentDelivery && bestPickup?.utility > currentDelivery.utility) {
+                    return bestPickup;
+                }
+                if (currentDelivery) return currentDelivery;
                 break;
+            }
             case 'go_to_spawner': {
                 const reachedTarget = beliefs.me.pos.x === currentIntention.target.x
                     && beliefs.me.pos.y === currentIntention.target.y;
