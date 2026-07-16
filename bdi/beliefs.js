@@ -230,6 +230,18 @@ class Agents {
             }
         }
     }
+
+    /**
+     * Returns whether another agent occupies the given tile.
+     * @param {{x: number, y: number}} position
+     * @returns {boolean}
+     */
+    isOccupied(position) {
+        for (const agent of this.others.values()) {
+            if (agent.x === position.x && agent.y === position.y) return true;
+        }
+        return false;
+    }
 }
 
 /**
