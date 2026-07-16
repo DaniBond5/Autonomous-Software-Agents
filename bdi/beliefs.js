@@ -280,32 +280,6 @@ class World {
         }
     }
 
-    /** TODO: naive implementation, will probably have to go for something else once we implement
-     * search algorithms or PDDL
-     * Function that returns the closest delivery tile given a coordinate
-     * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} pos
-     * @returns the nearest delivery tile wrt the given coordinates
-     */
-    nearestDelivery({ x, y }) {
-        const nearestDelivery = Array.from(this.deliveries.values())
-            .sort((a, b) => distance({ x, y }, a) - distance({ x, y }, b))
-            .shift();
-        return nearestDelivery;
-    }
-
-    /**
-     * TODO: Another naive implementation for a first attempt at making it all work
-     * Function that returns the closest parcel spawning tile given a coordinate.
-     * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} pos
-     * @returns the nearest parcel spawning tile wrt the given coordinates
-     */
-    nearestSpawner({ x, y }) {
-        const nearestSpawningTile = Array.from(this.spawners.values())
-            .sort((a, b) => distance({ x, y }, a) - distance({ x, y }, b))
-            .shift();
-        return nearestSpawningTile;
-    }
-
     /**
      * This function returns the frequency of parcel decay.
      * If the decaying interval is set to 0, it returns 0, otherwise it computes the frequency

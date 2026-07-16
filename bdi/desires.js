@@ -1,4 +1,4 @@
-import { distance } from "../utils/geometry.js";
+import { distance, distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
 
 /**
  * @typedef {{x: number, y: number}} Point
@@ -18,6 +18,25 @@ import { distance } from "../utils/geometry.js";
 
 const GO_DELIVER_THRESHOLD = 5;     // threshold to make the agent go deliver parcels if he has X * averageParcelReward parcels in its bag
 const PARCEL_REWARD_THRESHOLD = 5;
+
+/**
+ * Selects the reachable target with the shortest path from a starting position.
+ * @param {import("../utils/geometry.js").ShortestPaths | null} search
+ * @param {Iterable<Point>} targets
+ * @returns {{target: Point, distance: number} | null}
+ */
+function nearestReachableTarget(search, targets) {
+    let nearest = null;
+
+    for (const target of targets) {
+        const targetDistance = distanceFromSearch(search, target);
+        if (targetDistance < (nearest?.distance ?? Infinity)) {
+            nearest = { target, distance: targetDistance };
+        }
+    }
+
+    return nearest;
+}
 
 /**
  * Computes the expected values for the number of carried parcels and of the carried reward.
@@ -45,12 +64,11 @@ export function expectedUtilityInfo(beliefs, dist) {
  * Computes the utility of picking up the given parcel.
  * @param {import("./beliefs.js").beliefs} beliefs
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel} parcel
+ * @param {number} distanceToParcel
+ * @param {number} distanceToDelivery
  * @returns {number} the utility for picking up the parcel.
  */
-export function pickUpUtility(beliefs, parcel) {
-    let distanceToParcel = distance(beliefs.me.pos, parcel);
-    let nearestDelivery = beliefs.world.nearestDelivery(parcel);
-    let distanceToDelivery = distance(parcel, nearestDelivery);
+export function pickUpUtility(beliefs, parcel, distanceToParcel, distanceToDelivery) {
     let decayFrequency = beliefs.world.decayFrequency();
 
     let expectedInfo = expectedUtilityInfo(beliefs, (distanceToParcel + distanceToDelivery));
@@ -65,12 +83,10 @@ export function pickUpUtility(beliefs, parcel) {
 /**
  * Computes the utility of delivering the carried parcels.
  * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {number} distanceToDelivery
  * @returns {number} the computed utility for delivering.
  */
-export function deliverUtility(beliefs) {
-    let nearestDelivery = beliefs.world.nearestDelivery(beliefs.me.pos);
-    let distanceToDelivery = distance(beliefs.me.pos, nearestDelivery);
-
+export function deliverUtility(beliefs, distanceToDelivery) {
     let expectedInfo = expectedUtilityInfo(beliefs, distanceToDelivery);
     let expectedNumBaggedParcels = expectedInfo[0];
     let expectedBaggedReward = expectedInfo[1];
@@ -82,14 +98,13 @@ export function deliverUtility(beliefs) {
 }
 
 /**
- * Computes the exploration utility towards the given target spawner.
+ * Computes the exploration utility using the path distance to the selected spawner.
  * Returns 0 when the expected reward is not positive.
  * @param {import("./beliefs.js").beliefs} beliefs
- * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} targetSpawner
+ * @param {number} distanceToSpawner
  * @returns {number} the exploration utility (0 if not worth exploring).
  */
-export function spawnerExplorationUtility(beliefs, targetSpawner) {
-    let distanceToSpawner = distance(beliefs.me.pos, targetSpawner);
+export function spawnerExplorationUtility(beliefs, distanceToSpawner) {
     let decayFrequency = beliefs.world.decayFrequency();
 
     let expectedReward = (beliefs.world.avgReward - (distanceToSpawner * decayFrequency));
@@ -109,34 +124,39 @@ export function spawnerExplorationUtility(beliefs, targetSpawner) {
 export function generateDesires(beliefs) {
     const desires = [];
     const knownParcels = beliefs.parcels.availableKnown(beliefs.world.decayInterval);
+    const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos);
 
     for (let parcel of knownParcels) {
         if (!parcel.carriedBy && parcel.reward > PARCEL_REWARD_THRESHOLD) {
-            let utility = pickUpUtility(beliefs, parcel);
+            const distanceToParcel = distanceFromSearch(agentPaths, parcel);
+            if (!Number.isFinite(distanceToParcel)) continue;
+
+            const parcelPaths = shortestPathsFrom(beliefs, parcel);
+            const delivery = nearestReachableTarget(parcelPaths, beliefs.world.deliveries.values());
+            if (!delivery) continue;
+
+            let utility = pickUpUtility(beliefs, parcel, distanceToParcel, delivery.distance);
             if (utility > 0) desires.push({ type: 'go_pick_up', target: { x: parcel.x, y: parcel.y }, utility, id: parcel.id });
         }
     }
 
     if ((beliefs.parcels.carried.size > 0) && ((beliefs.world.decayFrequency() > 0) || (beliefs.parcels.carriedScore() > beliefs.world.avgReward * GO_DELIVER_THRESHOLD))) {
-        let utility = deliverUtility(beliefs);
-        if (utility > 0) {
-            let deliveryPoint = beliefs.world.nearestDelivery(beliefs.me.pos);
-            if (deliveryPoint) {   // guard: never emit a desire without a valid target
-            desires.push({ type: 'go_deliver', target: { x: deliveryPoint.x, y: deliveryPoint.y }, utility });
-            }
+        const delivery = nearestReachableTarget(agentPaths, beliefs.world.deliveries.values());
+        if (delivery) {
+            let utility = deliverUtility(beliefs, delivery.distance);
+            if (utility > 0) desires.push({ type: 'go_deliver', target: { x: delivery.target.x, y: delivery.target.y }, utility });
         }
     }
 
     const hasPickupDesire = desires.some(desire => desire.type === 'go_pick_up');
     if (!hasPickupDesire && beliefs.parcels.carried.size === 0) {
-        let targetSpawner = Array.from(beliefs.world.spawners.values())
-            .filter(spawner => distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance)
-            .sort((a, b) => distance(beliefs.me.pos, a) - distance(beliefs.me.pos, b))
-            .shift();
-        if (targetSpawner) {
-            let utility = spawnerExplorationUtility(beliefs, targetSpawner);
+        const outOfSightSpawners = Array.from(beliefs.world.spawners.values())
+            .filter(spawner => distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance);
+        const spawner = nearestReachableTarget(agentPaths, outOfSightSpawners);
+        if (spawner) {
+            let utility = spawnerExplorationUtility(beliefs, spawner.distance);
             if (utility > 0) {
-                desires.push({ type: 'go_to_spawner', target: { x: targetSpawner.x, y: targetSpawner.y }, utility });
+                desires.push({ type: 'go_to_spawner', target: { x: spawner.target.x, y: spawner.target.y }, utility });
             }
         }
     }
