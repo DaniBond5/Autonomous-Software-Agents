@@ -20,6 +20,11 @@ const directionalTiles = {
 const positionKey = ({ x, y }) => `${x},${y}`;
 
 /**
+ * @typedef {Object} PathfindingOptions
+ * @property {function({x: number, y: number}): boolean} [isBlocked]
+ */
+
+/**
  * @typedef {Object} ShortestPaths
  * @property {{x: number, y: number}} start
  * @property {Map<string, number>} distances
@@ -30,9 +35,10 @@ const positionKey = ({ x, y }) => `${x},${y}`;
  * Computes shortest paths from one position to every reachable tile.
  * @param {import("../bdi/beliefs.js").beliefs} beliefs
  * @param {{x: number, y: number}} start
+ * @param {PathfindingOptions} [options]
  * @returns {ShortestPaths | null}
  */
-export function shortestPathsFrom(beliefs, start) {
+export function shortestPathsFrom(beliefs, start, options = {}) {
     if (!beliefs || !start || !isPositionTraversable(beliefs, start)) return null;
 
     const startingPosition = { x: start.x, y: start.y };
@@ -46,7 +52,7 @@ export function shortestPathsFrom(beliefs, start) {
         const current = frontier[frontierIndex++];
         const currentDistance = distances.get(positionKey(current));
 
-        for (const neighbor of getNeighbors(beliefs, current)) {
+        for (const neighbor of getNeighbors(beliefs, current, options)) {
             const neighborKey = positionKey(neighbor);
             if (distances.has(neighborKey)) continue;
 
@@ -95,12 +101,13 @@ export function pathFromSearch(search, target) {
  * Performs a Breadth First Search from an optional starting position to a goal.
  * @param {import("../bdi/beliefs.js").beliefs} beliefs
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} goalTile
- * @param {{x: number, y: number}} [startingPosition=beliefs.me.pos]
+ * @param {PathfindingOptions & {startingPosition?: {x: number, y: number}}} [options]
  * @returns {false | {x: number, y: number}[]} false if unreachable, otherwise the path (empty at the goal)
  */
-export function BFS(beliefs, goalTile, startingPosition = beliefs?.me?.pos) {
+export function BFS(beliefs, goalTile, options = {}) {
     if (!goalTile) return false;
-    return pathFromSearch(shortestPathsFrom(beliefs, startingPosition), goalTile);
+    const startingPosition = options.startingPosition ?? beliefs?.me?.pos;
+    return pathFromSearch(shortestPathsFrom(beliefs, startingPosition, options), goalTile);
 }
 
 /**
@@ -136,10 +143,11 @@ export function isMoveAllowed(beliefs, from, to) {
 /**
  * This function returns an array of neighboring positions given one.
  * @param {import("../bdi/beliefs.js").beliefs} beliefs 
- * @param {{x: number, y: number}} position 
+ * @param {{x: number, y: number}} position
+ * @param {PathfindingOptions} [options]
  * @returns an array of the neighboring position of the one given as an argument.
  */
-export function getNeighbors(beliefs, {x: positionX, y: positionY}) {
+export function getNeighbors(beliefs, {x: positionX, y: positionY}, options = {}) {
     let neighbors = [];
     
     const directions = [
@@ -154,7 +162,8 @@ export function getNeighbors(beliefs, {x: positionX, y: positionY}) {
         let neighborY = positionY + direction.dy;
         const neighbor = { x: neighborX, y: neighborY };
 
-        if (isMoveAllowed(beliefs, { x: positionX, y: positionY }, neighbor)) neighbors.push(neighbor);
+        if (isMoveAllowed(beliefs, { x: positionX, y: positionY }, neighbor)
+            && !options.isBlocked?.(neighbor)) neighbors.push(neighbor);
     }
     return neighbors;
 }

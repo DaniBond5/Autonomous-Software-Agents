@@ -19,6 +19,22 @@ function stepDir(a, b) {
 }
 
 /**
+ * Uses the static path unless its next tile is occupied, then looks for a temporary detour.
+ * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {{x: number, y: number}} target
+ * @returns {false | {x: number, y: number}[]}
+ */
+function findOperationalPath(beliefs, target) {
+    const staticPath = BFS(beliefs, target);
+    if (staticPath === false || staticPath.length === 0) return staticPath;
+    if (!beliefs.agents.isOccupied(staticPath[0])) return staticPath;
+
+    return BFS(beliefs, target, {
+        isBlocked: position => beliefs.agents.isOccupied(position),
+    });
+}
+
+/**
  * Navigate one step toward the target; return `terminal` once arrived.
  * The next step is planned again on the following agent cycle.
  * @param {Action | null} terminal
@@ -28,10 +44,13 @@ function stepDir(a, b) {
  */
 function navigateThen(terminal, intention, beliefs) {
     const me = roundPos(beliefs.me.pos);
-    const path = BFS(beliefs, { x: intention.target.x, y: intention.target.y });
+    const path = findOperationalPath(
+        beliefs,
+        { x: intention.target.x, y: intention.target.y }
+    );
 
     if (path === false) {
-        dbg(`${intention.type}: NO PATH  me(${me.x},${me.y}) -> target(${intention.target.x},${intention.target.y})`);
+        dbg(`${intention.type}: NO AVAILABLE PATH  me(${me.x},${me.y}) -> target(${intention.target.x},${intention.target.y})`);
         return null;
     }
     if (path.length === 0) {
