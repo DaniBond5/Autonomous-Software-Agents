@@ -249,8 +249,11 @@ class Agents {
  */
 class World {
     constructor() {
-        this.width = -1;
-        this.height = -1;
+        /** Number of X coordinates in the map, not the maximum X coordinate. */
+        this.width = 0;
+
+        /** Number of Y coordinates in the map, not the maximum Y coordinate. */
+        this.height = 0;
 
         /** Can't use objects as key for maps, solution is to use a string defining the coordinates of the tile instead.
          * Positions are unique anyway.
@@ -322,23 +325,29 @@ class World {
 
     /**
      * Function that saves the map information received upon a onMap sensing.
-     * Saves map width, map height and the tileset.
+     * The received tiles are the authoritative source for both topology and dimensions.
+     * Width and height are coordinate counts, not maximum valid coordinates.
      * Currently RESETS the tiles
      */
-    updateFromMap(width, height, tileset) {
-        this.width = width;
-        this.height = height;
-
+    updateFromMap(_reportedWidth, _reportedHeight, tileset) {
         this.tiles.clear();
         this.spawners.clear();
         this.deliveries.clear();
+
+        let maxX = -1;
+        let maxY = -1;
         for (const tile of tileset) {
             const tileType = tile.type;
             const key = `${tile.x},${tile.y}`;
             this.tiles.set(key, tile);
             if (tileType == 1) this.spawners.set(key, tile);
             if (tileType == 2) this.deliveries.set(key, tile);
+            maxX = Math.max(maxX, tile.x);
+            maxY = Math.max(maxY, tile.y);
         }
+
+        this.width = maxX + 1;
+        this.height = maxY + 1;
     }
 
     /**
@@ -386,8 +395,8 @@ class Beliefs {
             this.world.updateFromConfig(config);
         });
 
-        socket.onMap(async (width, height, tileset) => {
-            this.world.updateFromMap(width, height, tileset);
+        socket.onMap(async (reportedWidth, reportedHeight, tileset) => {
+            this.world.updateFromMap(reportedWidth, reportedHeight, tileset);
         });
     }
 }

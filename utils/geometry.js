@@ -117,9 +117,8 @@ export function BFS(beliefs, goalTile, options = {}) {
  * @returns false if the given position is not traversable by the agent or true if it is.
  */
 export function isPositionTraversable(beliefs, {x: positionX, y: positionY}) {
-    if (!beliefs.world.tiles.has(`${positionX},${positionY}`)) return false;
-    if (beliefs.world.tiles.get(`${positionX},${positionY}`).type == 0 ) return false;
-    return positionX >= 0 && positionX < beliefs.world.width && positionY >= 0 && positionY < beliefs.world.height;
+    const tile = beliefs.world.tiles.get(`${positionX},${positionY}`);
+    return tile != null && tile.type != 0;
 }
 
 /**
