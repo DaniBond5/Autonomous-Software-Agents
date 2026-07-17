@@ -13,7 +13,7 @@ setInterval(() => {
     console.log("Width: ", beliefs.world.width, " Height: ", beliefs.world.height);
     //console.log(beliefs.world.tiles);
     console.log(beliefs.world.spawners.size);
-    console.log("parcel decaying interval: ", beliefs.world.decayInterval);
+    console.log("local parcel decay interval (ms): ", beliefs.world.localDecayIntervalMs);
 
     console.log("\nSTATO AGENTE");
 
@@ -37,5 +37,4 @@ setInterval(() => {
     console.log("Ricerca BFS: ", BFS(beliefs, aDeliveryTile));
 
 }, 3000);
-
 

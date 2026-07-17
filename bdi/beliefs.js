@@ -1,6 +1,17 @@
 import { distance } from "../utils/geometry.js";
 
-const NO_PARCEL_DECAY_VALUE = 0;
+function parseLocalDecayIntervalMs(event) {
+    switch (event) {
+        case '1s': return 1000;
+        case '2s': return 2000;
+        case '5s': return 5000;
+        case '10s': return 10000;
+        case '1m': return 60000;
+        case '1h': return 3600000;
+        case 'infinite': return 0;
+        default: return 1000;
+    }
+}
 
 /**
  * Holds the agent's own data: identity, position and score.
@@ -88,7 +99,7 @@ class Parcels {
             }
             else if (parcel.carriedBy === meId) {
                 this.known.delete(parcel.id);
-                if (parcel.reward <= 1) this.carried.delete(parcel.id);
+                if (parcel.reward <= 0) this.carried.delete(parcel.id);
                 else this.carried.set(parcel.id, parcel);
             }
             else {
@@ -165,17 +176,17 @@ class Parcels {
     /**
      * Returns remembered free parcels with their reward estimated at the current time.
      * Parcels whose estimated reward is no longer positive are forgotten.
-     * @param {number} decayInterval parcel decay interval in seconds
+     * @param {number} localDecayIntervalMs local decay extrapolation interval in milliseconds
      * @returns {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]}
      */
-    availableKnown(decayInterval) {
+    availableKnown(localDecayIntervalMs) {
         const now = Date.now();
         const available = [];
 
         for (const [id, rememberedParcel] of this.known) {
             let estimatedReward = rememberedParcel.reward;
-            if (decayInterval > 0) {
-                estimatedReward -= Math.floor((now - rememberedParcel.observedAt) / (decayInterval * 1000));
+            if (localDecayIntervalMs > 0) {
+                estimatedReward -= Math.floor((now - rememberedParcel.observedAt) / localDecayIntervalMs);
             }
 
             if (estimatedReward <= 0) {
@@ -284,10 +295,8 @@ class World {
          */
         this.observationDistance = -1;
 
-        /**
-         * @type {number}
-         */
-        this.decayInterval = -1;
+        /** Local decay extrapolation interval in ms; 0 disables local extrapolation. */
+        this.localDecayIntervalMs = 0;
 
         /**
          * @type {number}
@@ -313,12 +322,7 @@ class World {
         this.observationDistance = playerConfig.observation_distance;
 
         const parcelsConfig = config.GAME.parcels
-        // TODO: there's also a 'frame' decaying interval, need to figure out its measure and add an initialization for that case
-        let decay = parcelsConfig.decaying_event;
-        if (decay.includes('s')) {
-            this.decayInterval = Number(decay.substring(0, decay.indexOf('s')));
-        }
-        else if (decay === 'infinite') this.decayInterval = NO_PARCEL_DECAY_VALUE;
+        this.localDecayIntervalMs = parseLocalDecayIntervalMs(parcelsConfig.decaying_event);
         this.avgReward = parcelsConfig.reward_avg;
         this.rewardVariance = parcelsConfig.reward_variance;
     }
@@ -351,13 +355,13 @@ class World {
     }
 
     /**
-     * This function returns the frequency of parcel decay.
-     * If the decaying interval is set to 0, it returns 0, otherwise it computes the frequency
-     * @returns the parcel decay frequency
+     * Returns the locally predicted reward loss during one movement.
+     * A zero interval disables local extrapolation; the server may still decay rewards.
+     * @returns {number} the locally predicted decay per movement
      */
-    decayFrequency() {
-        if (this.decayInterval == NO_PARCEL_DECAY_VALUE) return 0;
-        return (this.movementDuration / this.decayInterval) / 1000;
+    decayPerMove() {
+        if (this.localDecayIntervalMs <= 0) return 0;
+        return this.movementDuration / this.localDecayIntervalMs;
     }
 }
 

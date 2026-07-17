@@ -36,25 +36,23 @@ function nearestReachableTarget(search, targets) {
 }
 
 /**
- * Computes the expected values for the number of carried parcels and of the carried reward.
- * For each carried parcel we compute its expected reward using a given distance.
- * If it's lte than 0, we count one less carried parcel and remove its reward, in order to be able to compute a more precise utility value.
+ * Computes the total reward that carried parcels are expected to retain at delivery.
  * @param {import("./beliefs.js").beliefs} beliefs
- * @param {number} dist
- * @returns {[number, number]} [expectedNumCarriedParcels, expectedCarriedReward]
+ * @param {number} distanceToDelivery
+ * @returns {number} the expected carried reward at delivery
  */
-export function expectedUtilityInfo(beliefs, dist) {
-    let expectedNumBaggedParcels = beliefs.parcels.carried.size;
-    let expectedBaggedReward = beliefs.parcels.carriedScore();
-    let decayFrequency = beliefs.world.decayFrequency();
-    for (let baggedParcel of beliefs.parcels.carried.values()) {
-        let expectedParcelReward = baggedParcel.reward - (decayFrequency * dist);
-        if (expectedParcelReward <= 0) {
-            expectedNumBaggedParcels--;
-            expectedBaggedReward -= baggedParcel.reward;
-        }
+function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
+    const decayPerMove = beliefs.world.decayPerMove();
+    let expectedReward = 0;
+
+    for (const parcel of beliefs.parcels.carried.values()) {
+        expectedReward += Math.max(
+            0,
+            parcel.reward - decayPerMove * distanceToDelivery
+        );
     }
-    return [expectedNumBaggedParcels, expectedBaggedReward];
+
+    return expectedReward;
 }
 
 /**
@@ -66,14 +64,13 @@ export function expectedUtilityInfo(beliefs, dist) {
  * @returns {number} the path-efficiency utility for picking up the parcel.
  */
 export function pickUpUtility(beliefs, parcel, distanceToParcel, distanceToDelivery) {
-    const decayFrequency = beliefs.world.decayFrequency();
     const pickupCost = distanceToParcel + distanceToDelivery;
-
-    const expectedInfo = expectedUtilityInfo(beliefs, pickupCost);
-    const expectedNumBaggedParcels = expectedInfo[0];
-    const expectedBaggedReward = expectedInfo[1] - ((decayFrequency * distanceToParcel) * expectedNumBaggedParcels);
-    const expectedParcelReward = parcel.reward - decayFrequency * distanceToParcel;
-    const expectedTotalDeliveredReward = (expectedParcelReward + expectedBaggedReward) - ((decayFrequency * distanceToDelivery) * (expectedNumBaggedParcels + 1));
+    const expectedCarriedReward = expectedCarriedRewardAtDelivery(beliefs, pickupCost);
+    const expectedNewParcelReward = Math.max(
+        0,
+        parcel.reward - beliefs.world.decayPerMove() * pickupCost
+    );
+    const expectedTotalDeliveredReward = expectedCarriedReward + expectedNewParcelReward;
 
     return expectedTotalDeliveredReward / Math.max(1, pickupCost);
 }
@@ -85,32 +82,18 @@ export function pickUpUtility(beliefs, parcel, distanceToParcel, distanceToDeliv
  * @returns {number} the path-efficiency utility for delivering.
  */
 export function deliverUtility(beliefs, distanceToDelivery) {
-    const expectedInfo = expectedUtilityInfo(beliefs, distanceToDelivery);
-    const expectedNumBaggedParcels = expectedInfo[0];
-    const expectedBaggedReward = expectedInfo[1];
-
-    const decayFrequency = beliefs.world.decayFrequency();
-    const expectedDeliveredReward = expectedBaggedReward - ((decayFrequency * distanceToDelivery) * expectedNumBaggedParcels);
+    const expectedDeliveredReward = expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery);
 
     return expectedDeliveredReward / Math.max(1, distanceToDelivery);
 }
 
 /**
- * Computes the exploration utility using the path distance to the selected spawner.
- * Returns 0 when the expected reward is not positive.
- * @param {import("./beliefs.js").beliefs} beliefs
+ * Computes exploration utility from the path distance to the selected spawner.
  * @param {number} distanceToSpawner
- * @returns {number} the exploration utility (0 if not worth exploring).
+ * @returns {number} the exploration utility
  */
-export function spawnerExplorationUtility(beliefs, distanceToSpawner) {
-    let decayFrequency = beliefs.world.decayFrequency();
-
-    let expectedReward = (beliefs.world.avgReward - (distanceToSpawner * decayFrequency));
-    if (expectedReward <= 0) return 0;
-
-    // TODO: might be useful to add a malus here.
-    let utility = (expectedReward) / distanceToSpawner;
-    return utility;
+export function spawnerExplorationUtility(distanceToSpawner) {
+    return 1 / Math.max(1, distanceToSpawner);
 }
 
 /**
@@ -121,7 +104,7 @@ export function spawnerExplorationUtility(beliefs, distanceToSpawner) {
  */
 export function generateDesires(beliefs) {
     const desires = [];
-    const knownParcels = beliefs.parcels.availableKnown(beliefs.world.decayInterval);
+    const knownParcels = beliefs.parcels.availableKnown(beliefs.world.localDecayIntervalMs);
     const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos);
 
     for (let parcel of knownParcels) {
@@ -134,7 +117,7 @@ export function generateDesires(beliefs) {
             if (!delivery) continue;
 
             const pickupCost = distanceToParcel + delivery.distance;
-            const expectedNewParcelRewardAtDelivery = parcel.reward - (beliefs.world.decayFrequency() * pickupCost);
+            const expectedNewParcelRewardAtDelivery = parcel.reward - (beliefs.world.decayPerMove() * pickupCost);
             if (expectedNewParcelRewardAtDelivery <= 0) continue;
 
             const utility = pickUpUtility(beliefs, parcel, distanceToParcel, delivery.distance);
@@ -156,7 +139,7 @@ export function generateDesires(beliefs) {
             .filter(spawner => distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance);
         const spawner = nearestReachableTarget(agentPaths, outOfSightSpawners);
         if (spawner) {
-            let utility = spawnerExplorationUtility(beliefs, spawner.distance);
+            let utility = spawnerExplorationUtility(spawner.distance);
             if (utility > 0) {
                 desires.push({ type: 'go_to_spawner', target: { x: spawner.target.x, y: spawner.target.y }, utility });
             }
