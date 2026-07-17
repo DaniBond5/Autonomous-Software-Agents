@@ -9,6 +9,23 @@ const dbg = (...args) => { if (DEBUG) console.log("[agent]", ...args); };
 
 const roundPos = (p) => ({ x: Math.round(p.x), y: Math.round(p.y) });
 
+/**
+ * @typedef {Object} ActiveDetour
+ * @property {string} intentionKey
+ * @property {{x: number, y: number}} currentPosition
+ * @property {{x: number, y: number}[]} remainingPath
+ */
+
+/** @type {ActiveDetour | null} */
+let activeDetour = null;
+
+const samePosition = (a, b) => a.x === b.x && a.y === b.y;
+
+/** Returns a stable key for desires regenerated across agent cycles. */
+function intentionKey(intention) {
+    return `${intention.type}:${intention.id ?? ''}:${intention.target.x},${intention.target.y}`;
+}
+
 /** Direction from `a` to an ADJACENT tile `b`. up = y+1, down = y-1. */
 function stepDir(a, b) {
     if (b.x > a.x) return 'right';
@@ -19,19 +36,73 @@ function stepDir(a, b) {
 }
 
 /**
- * Uses the static path unless its next tile is occupied, then looks for a temporary detour.
+ * Uses the static path normally. When its next tile is occupied, starts a dynamic
+ * detour and preserves its remaining path until completion or invalidation.
  * @param {import("./beliefs.js").beliefs} beliefs
- * @param {{x: number, y: number}} target
+ * @param {import("./desires.js").Desire} intention
  * @returns {false | {x: number, y: number}[]}
  */
-function findOperationalPath(beliefs, target) {
+function findOperationalPath(beliefs, intention) {
+    const target = intention.target;
+    const currentPosition = roundPos(beliefs.me.pos);
+    const currentIntentionKey = intentionKey(intention);
+
+    if (activeDetour?.intentionKey !== currentIntentionKey) {
+        activeDetour = null;
+    }
+
+    if (activeDetour) {
+        const expectedPosition = activeDetour.remainingPath[0];
+
+        if (samePosition(currentPosition, activeDetour.currentPosition)) {
+            // The previous movement did not advance: keep the complete remaining path.
+        } else if (expectedPosition && samePosition(currentPosition, expectedPosition)) {
+            activeDetour.remainingPath.shift();
+            activeDetour.currentPosition = currentPosition;
+        } else {
+            activeDetour = null;
+        }
+    }
+
+    if (activeDetour) {
+        if (activeDetour.remainingPath.length === 0) {
+            activeDetour = null;
+            return [];
+        }
+
+        if (beliefs.agents.isOccupied(activeDetour.remainingPath[0])) {
+            const replannedDetour = BFS(beliefs, target, {
+                isBlocked: position => beliefs.agents.isOccupied(position),
+            });
+
+            if (replannedDetour === false) return false;
+            if (replannedDetour.length === 0) {
+                activeDetour = null;
+                return [];
+            }
+
+            activeDetour.currentPosition = currentPosition;
+            activeDetour.remainingPath = [...replannedDetour];
+        }
+
+        return activeDetour.remainingPath;
+    }
+
     const staticPath = BFS(beliefs, target);
     if (staticPath === false || staticPath.length === 0) return staticPath;
     if (!beliefs.agents.isOccupied(staticPath[0])) return staticPath;
 
-    return BFS(beliefs, target, {
+    const detour = BFS(beliefs, target, {
         isBlocked: position => beliefs.agents.isOccupied(position),
     });
+    if (detour === false || detour.length === 0) return detour;
+
+    activeDetour = {
+        intentionKey: currentIntentionKey,
+        currentPosition,
+        remainingPath: [...detour],
+    };
+    return activeDetour.remainingPath;
 }
 
 /**
@@ -44,10 +115,7 @@ function findOperationalPath(beliefs, target) {
  */
 function navigateThen(terminal, intention, beliefs) {
     const me = roundPos(beliefs.me.pos);
-    const path = findOperationalPath(
-        beliefs,
-        { x: intention.target.x, y: intention.target.y }
-    );
+    const path = findOperationalPath(beliefs, intention);
 
     if (path === false) {
         dbg(`${intention.type}: NO AVAILABLE PATH  me(${me.x},${me.y}) -> target(${intention.target.x},${intention.target.y})`);

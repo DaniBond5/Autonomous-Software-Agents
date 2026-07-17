@@ -16,9 +16,6 @@ import { distance, distanceFromSearch, shortestPathsFrom } from "../utils/geomet
  * @property {string} [id]     - parcel id, ONLY for go_pick_up (used for intention revision)
  */
 
-const GO_DELIVER_THRESHOLD = 5;     // threshold to make the agent go deliver parcels if he has X * averageParcelReward parcels in its bag
-const PARCEL_REWARD_THRESHOLD = 5;
-
 /**
  * Selects the reachable target with the shortest path from a starting position.
  * @param {import("../utils/geometry.js").ShortestPaths | null} search
@@ -66,35 +63,36 @@ export function expectedUtilityInfo(beliefs, dist) {
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel} parcel
  * @param {number} distanceToParcel
  * @param {number} distanceToDelivery
- * @returns {number} the utility for picking up the parcel.
+ * @returns {number} the path-efficiency utility for picking up the parcel.
  */
 export function pickUpUtility(beliefs, parcel, distanceToParcel, distanceToDelivery) {
-    let decayFrequency = beliefs.world.decayFrequency();
+    const decayFrequency = beliefs.world.decayFrequency();
+    const pickupCost = distanceToParcel + distanceToDelivery;
 
-    let expectedInfo = expectedUtilityInfo(beliefs, (distanceToParcel + distanceToDelivery));
-    let expectedNumBaggedParcels = expectedInfo[0];
-    let expectedBaggedReward = expectedInfo[1] - ((decayFrequency * distanceToParcel) * expectedNumBaggedParcels);
-    let expectedParcelReward = parcel.reward - decayFrequency * distanceToParcel;
-    let utility = (expectedParcelReward + expectedBaggedReward) - ((decayFrequency * distanceToDelivery) * (expectedNumBaggedParcels + 1));
+    const expectedInfo = expectedUtilityInfo(beliefs, pickupCost);
+    const expectedNumBaggedParcels = expectedInfo[0];
+    const expectedBaggedReward = expectedInfo[1] - ((decayFrequency * distanceToParcel) * expectedNumBaggedParcels);
+    const expectedParcelReward = parcel.reward - decayFrequency * distanceToParcel;
+    const expectedTotalDeliveredReward = (expectedParcelReward + expectedBaggedReward) - ((decayFrequency * distanceToDelivery) * (expectedNumBaggedParcels + 1));
 
-    return utility;
+    return expectedTotalDeliveredReward / Math.max(1, pickupCost);
 }
 
 /**
  * Computes the utility of delivering the carried parcels.
  * @param {import("./beliefs.js").beliefs} beliefs
  * @param {number} distanceToDelivery
- * @returns {number} the computed utility for delivering.
+ * @returns {number} the path-efficiency utility for delivering.
  */
 export function deliverUtility(beliefs, distanceToDelivery) {
-    let expectedInfo = expectedUtilityInfo(beliefs, distanceToDelivery);
-    let expectedNumBaggedParcels = expectedInfo[0];
-    let expectedBaggedReward = expectedInfo[1];
+    const expectedInfo = expectedUtilityInfo(beliefs, distanceToDelivery);
+    const expectedNumBaggedParcels = expectedInfo[0];
+    const expectedBaggedReward = expectedInfo[1];
 
-    let decayFrequency = beliefs.world.decayFrequency();
-    let utility = expectedBaggedReward - ((decayFrequency * distanceToDelivery) * expectedNumBaggedParcels);
+    const decayFrequency = beliefs.world.decayFrequency();
+    const expectedDeliveredReward = expectedBaggedReward - ((decayFrequency * distanceToDelivery) * expectedNumBaggedParcels);
 
-    return utility;
+    return expectedDeliveredReward / Math.max(1, distanceToDelivery);
 }
 
 /**
@@ -127,7 +125,7 @@ export function generateDesires(beliefs) {
     const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos);
 
     for (let parcel of knownParcels) {
-        if (!parcel.carriedBy && parcel.reward > PARCEL_REWARD_THRESHOLD) {
+        if (!parcel.carriedBy) {
             const distanceToParcel = distanceFromSearch(agentPaths, parcel);
             if (!Number.isFinite(distanceToParcel)) continue;
 
@@ -135,15 +133,19 @@ export function generateDesires(beliefs) {
             const delivery = nearestReachableTarget(parcelPaths, beliefs.world.deliveries.values());
             if (!delivery) continue;
 
-            let utility = pickUpUtility(beliefs, parcel, distanceToParcel, delivery.distance);
+            const pickupCost = distanceToParcel + delivery.distance;
+            const expectedNewParcelRewardAtDelivery = parcel.reward - (beliefs.world.decayFrequency() * pickupCost);
+            if (expectedNewParcelRewardAtDelivery <= 0) continue;
+
+            const utility = pickUpUtility(beliefs, parcel, distanceToParcel, delivery.distance);
             if (utility > 0) desires.push({ type: 'go_pick_up', target: { x: parcel.x, y: parcel.y }, utility, id: parcel.id });
         }
     }
 
-    if ((beliefs.parcels.carried.size > 0) && ((beliefs.world.decayFrequency() > 0) || (beliefs.parcels.carriedScore() > beliefs.world.avgReward * GO_DELIVER_THRESHOLD))) {
+    if (beliefs.parcels.carried.size > 0) {
         const delivery = nearestReachableTarget(agentPaths, beliefs.world.deliveries.values());
         if (delivery) {
-            let utility = deliverUtility(beliefs, delivery.distance);
+            const utility = deliverUtility(beliefs, delivery.distance);
             if (utility > 0) desires.push({ type: 'go_deliver', target: { x: delivery.target.x, y: delivery.target.y }, utility });
         }
     }
