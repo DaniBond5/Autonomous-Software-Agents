@@ -1,4 +1,4 @@
-import { distance, distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
+import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
 
 /**
  * @typedef {{x: number, y: number}} Point
@@ -88,12 +88,15 @@ export function deliverUtility(beliefs, distanceToDelivery) {
 }
 
 /**
- * Computes exploration utility from the path distance to the selected spawner.
- * @param {number} distanceToSpawner
+ * movesSinceCheck = 1 + (now - lastCheckedAt) / movementDuration
+ * explorationUtility = movesSinceCheck / max(1, pathDistance)
+ * Spawners not observed recently gain priority over time, while BFS distance penalizes costly trips.
+ * @param {number} movesSinceCheck
+ * @param {number} pathDistance
  * @returns {number} the exploration utility
  */
-export function spawnerExplorationUtility(distanceToSpawner) {
-    return 1 / Math.max(1, distanceToSpawner);
+export function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
+    return movesSinceCheck / Math.max(1, pathDistance);
 }
 
 /**
@@ -135,14 +138,37 @@ export function generateDesires(beliefs) {
 
     const hasPickupDesire = desires.some(desire => desire.type === 'go_pick_up');
     if (!hasPickupDesire && beliefs.parcels.carried.size === 0) {
-        const outOfSightSpawners = Array.from(beliefs.world.spawners.values())
-            .filter(spawner => distance(beliefs.me.pos, spawner) > beliefs.world.observationDistance);
-        const spawner = nearestReachableTarget(agentPaths, outOfSightSpawners);
-        if (spawner) {
-            let utility = spawnerExplorationUtility(spawner.distance);
-            if (utility > 0) {
-                desires.push({ type: 'go_to_spawner', target: { x: spawner.target.x, y: spawner.target.y }, utility });
+        const now = Date.now();
+        const movementDuration = Math.max(1, beliefs.world.movementDuration);
+        let bestSpawner = null;
+        let bestPathDistance = Infinity;
+        let bestUtility = -Infinity;
+
+        for (const spawner of beliefs.world.spawners.values()) {
+            if (beliefs.world.isVisible(spawner)) continue;
+
+            const pathDistance = distanceFromSearch(agentPaths, spawner);
+            if (!Number.isFinite(pathDistance)) continue;
+
+            const lastCheckedAt = spawner.lastCheckedAt ?? now;
+            const timeSinceCheck = Math.max(0, now - lastCheckedAt);
+            const movesSinceCheck = 1 + timeSinceCheck / movementDuration;
+            const explorationUtility = spawnerExplorationUtility(movesSinceCheck, pathDistance);
+
+            if (explorationUtility > bestUtility
+                || (explorationUtility === bestUtility && pathDistance < bestPathDistance)) {
+                bestSpawner = spawner;
+                bestPathDistance = pathDistance;
+                bestUtility = explorationUtility;
             }
+        }
+
+        if (bestSpawner) {
+            desires.push({
+                type: 'go_to_spawner',
+                target: { x: bestSpawner.x, y: bestSpawner.y },
+                utility: bestUtility,
+            });
         }
     }
 

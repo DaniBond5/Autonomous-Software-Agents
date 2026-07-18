@@ -1,4 +1,4 @@
-import { distance } from "../utils/geometry.js";
+const positionKey = ({ x, y }) => `${x},${y}`;
 
 function parseLocalDecayIntervalMs(event) {
     switch (event) {
@@ -83,7 +83,14 @@ class Parcels {
         this.carried = new Map();
     }
 
-    update(perceivedParcels, meId, mePos, observationDistance) {
+    /**
+     * Updates parcel beliefs from the current sensing.
+     * A remembered parcel is forgotten when its last known position is observed without it.
+     * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} perceivedParcels
+     * @param {string} meId
+     * @param {function({x: number, y: number}): boolean} isVisible
+     */
+    update(perceivedParcels, meId, isVisible) {
         this.visible.clear();
         const seenNow = new Set();
         const observedAt = Date.now();
@@ -114,12 +121,9 @@ class Parcels {
             }
         }
 
-        const canInvalidateByPosition = mePos.x >= 0 && mePos.y >= 0 && observationDistance >= 0;
-        if (canInvalidateByPosition) {
-            for (const [id, parcel] of this.known) {
-                if (!seenNow.has(id) && distance(mePos, parcel) <= observationDistance) {
-                    this.known.delete(id);
-                }
+        for (const [id, parcel] of this.known) {
+            if (!seenNow.has(id) && isVisible(parcel)) {
+                this.known.delete(id);
             }
         }
     }
@@ -256,7 +260,7 @@ class Agents {
 }
 
 /**
- * Holds static game/world data: map dimensions, tiles and game configuration.
+ * Stores map data, game configuration and observation metadata used by the agent.
  */
 class World {
     constructor() {
@@ -266,6 +270,12 @@ class World {
         /** Number of Y coordinates in the map, not the maximum Y coordinate. */
         this.height = 0;
 
+        /**
+         * Tile positions observed in the latest sensing event.
+         * @type {Set<string>}
+         */
+        this.visiblePositions = new Set();
+
         /** Can't use objects as key for maps, solution is to use a string defining the coordinates of the tile instead.
          * Positions are unique anyway.
          * This is the complete map of the current game.
@@ -274,8 +284,8 @@ class World {
         this.tiles = new Map();
 
         /**
-         * This map stores the parcel spawning tiles
-         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
+         * Stores known spawner tiles and the time each one was last checked.
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {lastCheckedAt: number}>}
          */
         this.spawners = new Map();
 
@@ -328,23 +338,23 @@ class World {
     }
 
     /**
-     * Function that saves the map information received upon a onMap sensing.
+     * Rebuilds the local map state from the latest map snapshot.
      * The received tiles are the authoritative source for both topology and dimensions.
      * Width and height are coordinate counts, not maximum valid coordinates.
-     * Currently RESETS the tiles
      */
     updateFromMap(_reportedWidth, _reportedHeight, tileset) {
         this.tiles.clear();
         this.spawners.clear();
         this.deliveries.clear();
 
+        const mapLoadedAt = Date.now();
         let maxX = -1;
         let maxY = -1;
         for (const tile of tileset) {
             const tileType = tile.type;
             const key = `${tile.x},${tile.y}`;
             this.tiles.set(key, tile);
-            if (tileType == 1) this.spawners.set(key, tile);
+            if (tileType == 1) this.spawners.set(key, { ...tile, lastCheckedAt: mapLoadedAt });
             if (tileType == 2) this.deliveries.set(key, tile);
             maxX = Math.max(maxX, tile.x);
             maxY = Math.max(maxY, tile.y);
@@ -352,6 +362,38 @@ class World {
 
         this.width = maxX + 1;
         this.height = maxY + 1;
+    }
+
+    /**
+     * Replaces the visible-position set with the latest sensing data.
+     */
+    updateVisiblePositions(positions) {
+        this.visiblePositions.clear();
+
+        for (const position of positions ?? []) {
+            if (!Number.isFinite(position?.x) || !Number.isFinite(position?.y)) continue;
+            this.visiblePositions.add(positionKey(position));
+        }
+    }
+
+    /**
+     * Returns whether a position was observed in the latest sensing event.
+     */
+    isVisible(position) {
+        if (!Number.isFinite(position?.x) || !Number.isFinite(position?.y)) return false;
+        return this.visiblePositions.has(positionKey(position));
+    }
+
+    /**
+     * Updates the last-check time of spawners observed in the current sensing.
+     */
+    markVisibleSpawners() {
+        const checkedAt = Date.now();
+        for (const spawner of this.spawners.values()) {
+            if (this.isVisible(spawner)) {
+                spawner.lastCheckedAt = checkedAt;
+            }
+        }
     }
 
     /**
@@ -386,13 +428,14 @@ class Beliefs {
         });
 
         socket.onSensing(async (sensing) => {
+            this.world.updateVisiblePositions(sensing.positions ?? []);
             this.parcels.update(
-                sensing.parcels,
+                sensing.parcels ?? [],
                 this.me.id,
-                this.me.pos,
-                this.world.observationDistance
+                position => this.world.isVisible(position)
             );
-            this.agents.update(sensing.agents);
+            this.agents.update(sensing.agents ?? []);
+            this.world.markVisibleSpawners();
         });
 
         socket.onConfig(async (config) => {
