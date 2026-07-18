@@ -40,6 +40,14 @@ async function runAgentLoop() {
             beliefs.me.pos
         );
 
+        const actionType = outcome?.action?.action;
+        const isTerminalAction = actionType === "pickup"
+            || actionType === "putdown";
+
+        if (isTerminalAction) {
+            currentIntention = null;
+        }
+
         if (outcome.status !== "succeeded") {
             await wait(IDLE_WAIT_MS);
         }

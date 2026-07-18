@@ -47,10 +47,9 @@ export function reviseIntention(currentIntention, beliefs, desires) {
                 break;
             }
             case 'go_to_spawner': {
-                const reachedTarget = beliefs.me.pos.x === currentIntention.target.x
-                    && beliefs.me.pos.y === currentIntention.target.y;
+                const targetVisible = beliefs.world.isVisible(currentIntention.target);
                 const pickupAvailable = desires.some(desire => desire.type === 'go_pick_up');
-                if (!reachedTarget && beliefs.parcels.carried.size === 0 && !pickupAvailable) {
+                if (!targetVisible && beliefs.parcels.carried.size === 0 && !pickupAvailable) {
                     return currentIntention;
                 }
                 break;
