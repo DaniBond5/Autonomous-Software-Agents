@@ -36,8 +36,8 @@ function stepDir(a, b) {
 }
 
 /**
- * Uses the static path normally. When its next tile is occupied, starts a dynamic
- * detour and preserves its remaining path until completion or invalidation.
+ * Uses the static path normally. Other agents block only the next move, while a
+ * dynamic detour persists until completion or invalidation.
  * @param {import("./beliefs.js").beliefs} beliefs
  * @param {import("./desires.js").Desire} intention
  * @returns {false | {x: number, y: number}[]}
@@ -45,6 +45,11 @@ function stepDir(a, b) {
 function findOperationalPath(beliefs, intention) {
     const target = intention.target;
     const currentPosition = roundPos(beliefs.me.pos);
+    const isBlockedNextStep = (position) => {
+        const isAdjacent = Math.abs(position.x - currentPosition.x)
+            + Math.abs(position.y - currentPosition.y) === 1;
+        return isAdjacent && beliefs.agents.isOccupied(position);
+    };
     const currentIntentionKey = intentionKey(intention);
 
     if (activeDetour?.intentionKey !== currentIntentionKey) {
@@ -72,7 +77,7 @@ function findOperationalPath(beliefs, intention) {
 
         if (beliefs.agents.isOccupied(activeDetour.remainingPath[0])) {
             const replannedDetour = BFS(beliefs, target, {
-                isBlocked: position => beliefs.agents.isOccupied(position),
+                isBlocked: isBlockedNextStep,
             });
 
             if (replannedDetour === false) return false;
@@ -93,7 +98,7 @@ function findOperationalPath(beliefs, intention) {
     if (!beliefs.agents.isOccupied(staticPath[0])) return staticPath;
 
     const detour = BFS(beliefs, target, {
-        isBlocked: position => beliefs.agents.isOccupied(position),
+        isBlocked: isBlockedNextStep,
     });
     if (detour === false || detour.length === 0) return detour;
 

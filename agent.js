@@ -5,24 +5,53 @@ import { reviseIntention } from "./bdi/intentions.js";
 import { planNextAction } from "./bdi/planning.js";
 import { executeAction } from "./bdi/execution.js";
 
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const IDLE_WAIT_MS = 200;
 
-beliefs.init(socket);
+const wait = (ms) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
 
-let currentIntention = null;
+async function runAgentLoop() {
+    let currentIntention = null;
 
-async function agentLoop() {
-    console.log("Agent loop started");
+    console.log("[agent] BDI loop started");
+
     while (true) {
         const desires = generateDesires(beliefs);
-        currentIntention = reviseIntention(currentIntention, beliefs, desires);
+
+        currentIntention = reviseIntention(
+            currentIntention,
+            beliefs,
+            desires
+        );
+
         const action = currentIntention
             ? planNextAction(currentIntention, beliefs)
             : null;
-        const outcome = await executeAction(action, beliefs, socket);
-        beliefs.parcels.reconcileActionOutcome(outcome, beliefs.me.id, beliefs.me.pos);
-        if (outcome.status !== 'succeeded') await sleep(200); // idle or failed action — don't spin
+
+        const outcome = await executeAction(
+            action,
+            beliefs,
+            socket
+        );
+
+        beliefs.parcels.reconcileActionOutcome(
+            outcome,
+            beliefs.me.id,
+            beliefs.me.pos
+        );
+
+        if (outcome.status !== "succeeded") {
+            await wait(IDLE_WAIT_MS);
+        }
     }
 }
 
-agentLoop();
+async function main() {
+    beliefs.init(socket);
+    await runAgentLoop();
+}
+
+main().catch((error) => {
+    console.error("[agent] Fatal error:", error);
+    process.exitCode = 1;
+});
