@@ -140,17 +140,20 @@ class Parcels {
             || (actionType !== 'pickup' && actionType !== 'putdown')
             || !Array.isArray(outcome.result)) return;
 
+        if (actionType === 'putdown') {
+            const carriedIds = [...this.carried.keys()];
+            for (const id of carriedIds) {
+                this.visible.delete(id);
+                this.known.delete(id);
+            }
+            this.carried.clear();
+            return;
+        }
+
         for (const resultParcel of outcome.result) {
             if (!resultParcel || typeof resultParcel !== 'object' || typeof resultParcel.id !== 'string') continue;
 
             const id = resultParcel.id;
-            if (actionType === 'putdown') {
-                this.visible.delete(id);
-                this.known.delete(id);
-                this.carried.delete(id);
-                continue;
-            }
-
             const storedParcel = this.visible.get(id)
                 ?? this.known.get(id)
                 ?? this.carried.get(id);
