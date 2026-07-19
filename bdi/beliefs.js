@@ -258,13 +258,53 @@ class Crates {
     }
 
     isOccupied(position) {
+        return this.getAt(position) !== null;
+    }
+
+    /** Returns the crate occupying a position, or null when it is free. */
+    getAt(position) {
         for (const crate of this.known.values()) {
             if (crate.x === position.x && crate.y === position.y) {
-                return true;
+                return crate;
             }
         }
 
-        return false;
+        return null;
+    }
+
+    /** Reconciles a successful PDDL push with the remembered crate position. */
+    reconcileActionOutcome(outcome) {
+        const action = outcome?.action;
+        if (
+            outcome?.status !== 'succeeded'
+            || action?.action !== 'move'
+            || action?.source !== 'pddl'
+            || action?.kind !== 'push'
+        ) {
+            return;
+        }
+
+        const { crateId, crateFrom, crateTo } = action;
+        if (
+            typeof crateId !== 'string'
+            || !Number.isFinite(crateFrom?.x)
+            || !Number.isFinite(crateFrom?.y)
+            || !Number.isFinite(crateTo?.x)
+            || !Number.isFinite(crateTo?.y)
+        ) {
+            return;
+        }
+
+        const crate = this.known.get(crateId);
+        if (!crate
+            || crate.x !== crateFrom.x
+            || crate.y !== crateFrom.y) return;
+
+        this.known.set(crateId, {
+            id: crateId,
+            x: crateTo.x,
+            y: crateTo.y
+        });
     }
 }
 
@@ -433,6 +473,14 @@ class World {
     isVisible(position) {
         if (!Number.isFinite(position?.x) || !Number.isFinite(position?.y)) return false;
         return this.visiblePositions.has(positionKey(position));
+    }
+
+    /** Returns whether a tile can contain or receive a crate. */
+    isCrateSpace(position) {
+        const tile = this.tiles.get(positionKey(position));
+        if (!tile) return false;
+        const tileType = String(tile.type);
+        return tileType === '5' || tileType === '5!';
     }
 
     /**

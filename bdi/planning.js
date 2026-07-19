@@ -1,10 +1,15 @@
 import { BFS } from "../utils/geometry.js";
+import {
+    invalidateCratePlan,
+    planCrateFallback,
+    reconcileCratePlanOutcome
+} from "../pddl/crate-planner.js";
 
 const DEBUG = true; // set to false to silence all [agent] debug logs
 const dbg = (...args) => { if (DEBUG) console.log("[agent]", ...args); };
 
 /**
- * @typedef {{action:'move',dir:'up'|'down'|'left'|'right'}|{action:'pickup'}|{action:'putdown'}} Action
+ * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'pddl',kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup'}|{action:'putdown'}} Action
  */
 
 const roundPos = (p) => ({ x: Math.round(p.x), y: Math.round(p.y) });
@@ -36,11 +41,11 @@ function stepDir(a, b) {
 }
 
 /**
- * Known crates block the entire ordinary path. Other agents block only the
- * next move, while a dynamic detour persists until completion or invalidation.
+ * Known crates block the entire ordinary path. A structural search diagnoses
+ * crate-blocked targets, while other agents affect only operational detours.
  * @param {import("./beliefs.js").beliefs} beliefs
  * @param {import("./desires.js").Desire} intention
- * @returns {false | {x: number, y: number}[]}
+ * @returns {{status:'path',path:false|{x:number,y:number}[]}|{status:'crate-blocked'}|{status:'unreachable'}}
  */
 function findOperationalPath(beliefs, intention) {
     const target = intention.target;
@@ -54,6 +59,26 @@ function findOperationalPath(beliefs, intention) {
             || (isAdjacent && beliefs.agents.isOccupied(position));
     };
     const currentIntentionKey = intentionKey(intention);
+
+    const crateAwarePath = BFS(beliefs, target, {
+        isBlocked: isCrateBlocked,
+    });
+    if (crateAwarePath === false) {
+        activeDetour = null;
+        const structuralPath = BFS(beliefs, target);
+        if (
+            structuralPath === false
+            || !structuralPath.some(position =>
+                beliefs.crates.isOccupied(position))
+        ) {
+            return { status: 'unreachable' };
+        }
+        return { status: 'crate-blocked' };
+    }
+    if (crateAwarePath.length === 0) {
+        activeDetour = null;
+        return { status: 'path', path: [] };
+    }
 
     if (activeDetour?.intentionKey !== currentIntentionKey) {
         activeDetour = null;
@@ -75,7 +100,7 @@ function findOperationalPath(beliefs, intention) {
     if (activeDetour) {
         if (activeDetour.remainingPath.length === 0) {
             activeDetour = null;
-            return [];
+            return { status: 'path', path: [] };
         }
 
         if (
@@ -86,36 +111,38 @@ function findOperationalPath(beliefs, intention) {
                 isBlocked: isBlockedForDetour,
             });
 
-            if (replannedDetour === false) return false;
+            if (replannedDetour === false) {
+                return { status: 'path', path: false };
+            }
             if (replannedDetour.length === 0) {
                 activeDetour = null;
-                return [];
+                return { status: 'path', path: [] };
             }
 
             activeDetour.currentPosition = currentPosition;
             activeDetour.remainingPath = [...replannedDetour];
         }
 
-        return activeDetour.remainingPath;
+        return { status: 'path', path: activeDetour.remainingPath };
     }
 
-    const crateAwarePath = BFS(beliefs, target, {
-        isBlocked: isCrateBlocked,
-    });
-    if (crateAwarePath === false || crateAwarePath.length === 0) return crateAwarePath;
-    if (!beliefs.agents.isOccupied(crateAwarePath[0])) return crateAwarePath;
+    if (!beliefs.agents.isOccupied(crateAwarePath[0])) {
+        return { status: 'path', path: crateAwarePath };
+    }
 
     const detour = BFS(beliefs, target, {
         isBlocked: isBlockedForDetour,
     });
-    if (detour === false || detour.length === 0) return detour;
+    if (detour === false || detour.length === 0) {
+        return { status: 'path', path: detour };
+    }
 
     activeDetour = {
         intentionKey: currentIntentionKey,
         currentPosition,
         remainingPath: [...detour],
     };
-    return activeDetour.remainingPath;
+    return { status: 'path', path: activeDetour.remainingPath };
 }
 
 /**
@@ -124,11 +151,30 @@ function findOperationalPath(beliefs, intention) {
  * @param {Action | null} terminal
  * @param {import("./desires.js").Desire} intention
  * @param {import("./beliefs.js").beliefs} beliefs
- * @returns {Action | null}
+ * @returns {Promise<Action | null>}
  */
-function navigateThen(terminal, intention, beliefs) {
+async function navigateThen(terminal, intention, beliefs) {
     const me = roundPos(beliefs.me.pos);
-    const path = findOperationalPath(beliefs, intention);
+    const navigation = findOperationalPath(beliefs, intention);
+
+    if (navigation.status === 'crate-blocked') {
+        return planCrateFallback(
+            beliefs,
+            intentionKey(intention),
+            intention.target
+        );
+    }
+
+    if (navigation.status === 'unreachable') {
+        invalidateCratePlan('target is structurally unreachable');
+        dbg(`${intention.type}: NO AVAILABLE PATH  me(${me.x},${me.y}) -> target(${intention.target.x},${intention.target.y})`);
+        return null;
+    }
+
+    invalidateCratePlan(
+        navigation.path === false ? 'only an agent detour is unavailable' : 'ordinary path is available'
+    );
+    const path = navigation.path;
 
     if (path === false) {
         dbg(`${intention.type}: NO AVAILABLE PATH  me(${me.x},${me.y}) -> target(${intention.target.x},${intention.target.y})`);
@@ -155,13 +201,18 @@ const planners = {
  * Converts an intention into the single action to execute in the current cycle.
  * @param {import("./desires.js").Desire} intention
  * @param {import("./beliefs.js").beliefs} beliefs
- * @returns {Action | null}
+ * @returns {Promise<Action | null>}
  */
-export function planNextAction(intention, beliefs) {
+export async function planNextAction(intention, beliefs) {
     const planner = planners[intention.type];
     if (!planner) {
         console.warn(`[planNextAction] no planner for type ${intention.type}`);
         return null;
     }
     return planner(intention, beliefs);
+}
+
+/** Reconciles only the pending PDDL planning action. */
+export function reconcilePlanningOutcome(outcome) {
+    reconcileCratePlanOutcome(outcome);
 }

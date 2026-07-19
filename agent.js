@@ -2,7 +2,10 @@ import { socket } from "./connection.js";
 import { beliefs } from "./bdi/beliefs.js";
 import { generateDesires } from "./bdi/desires.js";
 import { reviseIntention } from "./bdi/intentions.js";
-import { planNextAction } from "./bdi/planning.js";
+import {
+    planNextAction,
+    reconcilePlanningOutcome
+} from "./bdi/planning.js";
 import { executeAction } from "./bdi/execution.js";
 
 const IDLE_WAIT_MS = 200;
@@ -25,7 +28,7 @@ async function runAgentLoop() {
         );
 
         const action = currentIntention
-            ? planNextAction(currentIntention, beliefs)
+            ? await planNextAction(currentIntention, beliefs)
             : null;
 
         const outcome = await executeAction(
@@ -39,6 +42,8 @@ async function runAgentLoop() {
             beliefs.me.id,
             beliefs.me.pos
         );
+        beliefs.crates.reconcileActionOutcome(outcome);
+        reconcilePlanningOutcome(outcome);
 
         const actionType = outcome?.action?.action;
         const isTerminalAction = actionType === "pickup"
