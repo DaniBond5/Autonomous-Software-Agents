@@ -36,8 +36,8 @@ function stepDir(a, b) {
 }
 
 /**
- * Uses the static path normally. Other agents block only the next move, while a
- * dynamic detour persists until completion or invalidation.
+ * Known crates block the entire ordinary path. Other agents block only the
+ * next move, while a dynamic detour persists until completion or invalidation.
  * @param {import("./beliefs.js").beliefs} beliefs
  * @param {import("./desires.js").Desire} intention
  * @returns {false | {x: number, y: number}[]}
@@ -45,10 +45,13 @@ function stepDir(a, b) {
 function findOperationalPath(beliefs, intention) {
     const target = intention.target;
     const currentPosition = roundPos(beliefs.me.pos);
-    const isBlockedNextStep = (position) => {
+    const isCrateBlocked = position =>
+        beliefs.crates.isOccupied(position);
+    const isBlockedForDetour = (position) => {
         const isAdjacent = Math.abs(position.x - currentPosition.x)
             + Math.abs(position.y - currentPosition.y) === 1;
-        return isAdjacent && beliefs.agents.isOccupied(position);
+        return isCrateBlocked(position)
+            || (isAdjacent && beliefs.agents.isOccupied(position));
     };
     const currentIntentionKey = intentionKey(intention);
 
@@ -75,9 +78,12 @@ function findOperationalPath(beliefs, intention) {
             return [];
         }
 
-        if (beliefs.agents.isOccupied(activeDetour.remainingPath[0])) {
+        if (
+            isCrateBlocked(activeDetour.remainingPath[0])
+            || beliefs.agents.isOccupied(activeDetour.remainingPath[0])
+        ) {
             const replannedDetour = BFS(beliefs, target, {
-                isBlocked: isBlockedNextStep,
+                isBlocked: isBlockedForDetour,
             });
 
             if (replannedDetour === false) return false;
@@ -93,12 +99,14 @@ function findOperationalPath(beliefs, intention) {
         return activeDetour.remainingPath;
     }
 
-    const staticPath = BFS(beliefs, target);
-    if (staticPath === false || staticPath.length === 0) return staticPath;
-    if (!beliefs.agents.isOccupied(staticPath[0])) return staticPath;
+    const crateAwarePath = BFS(beliefs, target, {
+        isBlocked: isCrateBlocked,
+    });
+    if (crateAwarePath === false || crateAwarePath.length === 0) return crateAwarePath;
+    if (!beliefs.agents.isOccupied(crateAwarePath[0])) return crateAwarePath;
 
     const detour = BFS(beliefs, target, {
-        isBlocked: isBlockedNextStep,
+        isBlocked: isBlockedForDetour,
     });
     if (detour === false || detour.length === 0) return detour;
 

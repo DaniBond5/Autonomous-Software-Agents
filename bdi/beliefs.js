@@ -221,6 +221,54 @@ class Parcels {
 }
 
 /**
+ * Holds remembered crate positions.
+ */
+class Crates {
+    constructor() {
+        /** @type {Map<string, {id: string, x: number, y: number}>} */
+        this.known = new Map();
+    }
+
+    update(perceivedCrates, isVisible) {
+        const seenNow = new Set();
+
+        for (const crate of perceivedCrates) {
+            if (
+                !crate
+                || typeof crate.id !== 'string'
+                || !Number.isFinite(crate.x)
+                || !Number.isFinite(crate.y)
+            ) {
+                continue;
+            }
+
+            this.known.set(crate.id, {
+                id: crate.id,
+                x: crate.x,
+                y: crate.y
+            });
+            seenNow.add(crate.id);
+        }
+
+        for (const [id, crate] of this.known) {
+            if (!seenNow.has(id) && isVisible(crate)) {
+                this.known.delete(id);
+            }
+        }
+    }
+
+    isOccupied(position) {
+        for (const crate of this.known.values()) {
+            if (crate.x === position.x && crate.y === position.y) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+}
+
+/**
  * Holds the other agents perceived on the map.
  */
 class Agents {
@@ -418,6 +466,7 @@ class Beliefs {
     constructor() {
         this.me = new Me();
         this.parcels = new Parcels();
+        this.crates = new Crates();
         this.agents = new Agents();
         this.world = new World();
     }
@@ -435,6 +484,10 @@ class Beliefs {
             this.parcels.update(
                 sensing.parcels ?? [],
                 this.me.id,
+                position => this.world.isVisible(position)
+            );
+            this.crates.update(
+                sensing.crates ?? [],
                 position => this.world.isVisible(position)
             );
             this.agents.update(sensing.agents ?? []);
