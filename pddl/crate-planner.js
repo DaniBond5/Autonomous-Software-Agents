@@ -428,7 +428,7 @@ async function solveWithTimeout(domain, problem) {
     let timeoutId;
     const solverResult = onlineSolver(domain, problem).then(
         plan => ({ status: "resolved", plan }),
-        () => ({ status: "rejected" })
+        error => ({ status: "rejected", error })
     );
     const timeout = new Promise(resolve => {
         timeoutId = setTimeout(
@@ -523,7 +523,10 @@ export async function planCrateFallback(beliefs, intentionKey, target) {
         return null;
     }
     if (solverResult.status === "rejected") {
-        recordFailure(problemKey, "solver error");
+        const errorMessage = solverResult.error instanceof Error
+            ? solverResult.error.message
+            : String(solverResult.error ?? "unknown error");
+        recordFailure(problemKey, `solver error: ${errorMessage}`);
         return null;
     }
 
