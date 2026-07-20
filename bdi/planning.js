@@ -13,6 +13,7 @@ const dbg = (...args) => { if (DEBUG) console.log("[agent]", ...args); };
  */
 
 const roundPos = (p) => ({ x: Math.round(p.x), y: Math.round(p.y) });
+const positionKey = ({ x, y }) => `${x},${y}`;
 
 /**
  * @typedef {Object} ActiveDetour
@@ -50,8 +51,12 @@ function stepDir(a, b) {
 function findOperationalPath(beliefs, intention) {
     const target = intention.target;
     const currentPosition = roundPos(beliefs.me.pos);
+    const occupiedCratePositions = new Set();
+    for (const crate of beliefs.crates.known.values()) {
+        occupiedCratePositions.add(positionKey(crate));
+    }
     const isCrateBlocked = position =>
-        beliefs.crates.isOccupied(position);
+        occupiedCratePositions.has(positionKey(position));
     const isBlockedForDetour = (position) => {
         const isAdjacent = Math.abs(position.x - currentPosition.x)
             + Math.abs(position.y - currentPosition.y) === 1;
@@ -69,7 +74,7 @@ function findOperationalPath(beliefs, intention) {
         if (
             structuralPath === false
             || !structuralPath.some(position =>
-                beliefs.crates.isOccupied(position))
+                isCrateBlocked(position))
         ) {
             return { status: 'unreachable' };
         }

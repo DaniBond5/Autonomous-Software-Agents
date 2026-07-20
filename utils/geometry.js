@@ -17,6 +17,13 @@ const directionalTiles = {
     '←': { dx: -1, dy: 0 },
 };
 
+const CARDINAL_DIRECTIONS = Object.freeze([
+    Object.freeze({ dx: 1, dy: 0 }),
+    Object.freeze({ dx: -1, dy: 0 }),
+    Object.freeze({ dx: 0, dy: 1 }),
+    Object.freeze({ dx: 0, dy: -1 }),
+]);
+
 const positionKey = ({ x, y }) => `${x},${y}`;
 
 /**
@@ -82,7 +89,7 @@ export function distanceFromSearch(search, target) {
  * @param {{x: number, y: number}} target
  * @returns {false | {x: number, y: number}[]} false if unreachable, otherwise the path (empty at start)
  */
-export function pathFromSearch(search, target) {
+function pathFromSearch(search, target) {
     if (!Number.isFinite(distanceFromSearch(search, target))) return false;
 
     const path = [];
@@ -107,7 +114,40 @@ export function pathFromSearch(search, target) {
 export function BFS(beliefs, goalTile, options = {}) {
     if (!goalTile) return false;
     const startingPosition = options.startingPosition ?? beliefs?.me?.pos;
-    return pathFromSearch(shortestPathsFrom(beliefs, startingPosition, options), goalTile);
+    if (!beliefs || !startingPosition
+        || !isPositionTraversable(beliefs, startingPosition)) return false;
+
+    const start = { x: startingPosition.x, y: startingPosition.y };
+    const startKey = positionKey(start);
+    const goalKey = positionKey(goalTile);
+    if (startKey === goalKey) return [];
+
+    const search = {
+        start,
+        distances: new Map([[startKey, 0]]),
+        predecessors: new Map(),
+    };
+    const frontier = [start];
+    let frontierIndex = 0;
+
+    while (frontierIndex < frontier.length) {
+        const current = frontier[frontierIndex++];
+        const currentDistance = search.distances.get(positionKey(current));
+
+        for (const neighbor of getNeighbors(beliefs, current, options)) {
+            const neighborKey = positionKey(neighbor);
+            if (search.distances.has(neighborKey)) continue;
+
+            search.distances.set(neighborKey, currentDistance + 1);
+            search.predecessors.set(neighborKey, current);
+            if (neighborKey === goalKey) {
+                return pathFromSearch(search, goalTile);
+            }
+            frontier.push(neighbor);
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -146,19 +186,12 @@ export function isMoveAllowed(beliefs, from, to) {
  * @param {PathfindingOptions} [options]
  * @returns an array of the neighboring position of the one given as an argument.
  */
-export function getNeighbors(beliefs, {x: positionX, y: positionY}, options = {}) {
-    let neighbors = [];
-    
-    const directions = [
-        {dx: 1, dy: 0},
-        {dx: -1, dy:0},
-        {dx: 0, dy: 1},
-        {dx: 0, dy: -1}
-    ];
+function getNeighbors(beliefs, {x: positionX, y: positionY}, options = {}) {
+    const neighbors = [];
 
-    for (const direction of directions) {
-        let neighborX = positionX + direction.dx;
-        let neighborY = positionY + direction.dy;
+    for (const direction of CARDINAL_DIRECTIONS) {
+        const neighborX = positionX + direction.dx;
+        const neighborY = positionY + direction.dy;
         const neighbor = { x: neighborX, y: neighborY };
 
         if (isMoveAllowed(beliefs, { x: positionX, y: positionY }, neighbor)
