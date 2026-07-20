@@ -58,18 +58,12 @@ function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
 /**
  * Computes the utility of picking up the given parcel.
  * @param {import("./beliefs.js").beliefs} beliefs
- * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel} parcel
- * @param {number} distanceToParcel
- * @param {number} distanceToDelivery
+ * @param {number} pickupCost
+ * @param {number} expectedNewParcelReward
  * @returns {number} the path-efficiency utility for picking up the parcel.
  */
-export function pickUpUtility(beliefs, parcel, distanceToParcel, distanceToDelivery) {
-    const pickupCost = distanceToParcel + distanceToDelivery;
+function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward) {
     const expectedCarriedReward = expectedCarriedRewardAtDelivery(beliefs, pickupCost);
-    const expectedNewParcelReward = Math.max(
-        0,
-        parcel.reward - beliefs.world.decayPerMove() * pickupCost
-    );
     const expectedTotalDeliveredReward = expectedCarriedReward + expectedNewParcelReward;
 
     return expectedTotalDeliveredReward / Math.max(1, pickupCost);
@@ -81,7 +75,7 @@ export function pickUpUtility(beliefs, parcel, distanceToParcel, distanceToDeliv
  * @param {number} distanceToDelivery
  * @returns {number} the path-efficiency utility for delivering.
  */
-export function deliverUtility(beliefs, distanceToDelivery) {
+function deliverUtility(beliefs, distanceToDelivery) {
     const expectedDeliveredReward = expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery);
 
     return expectedDeliveredReward / Math.max(1, distanceToDelivery);
@@ -95,7 +89,7 @@ export function deliverUtility(beliefs, distanceToDelivery) {
  * @param {number} pathDistance
  * @returns {number} the exploration utility
  */
-export function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
+function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
     return movesSinceCheck / Math.max(1, pathDistance);
 }
 
@@ -110,22 +104,27 @@ export function generateDesires(beliefs) {
     const knownParcels = beliefs.parcels.availableKnown(beliefs.world.localDecayIntervalMs);
     const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos);
 
-    for (let parcel of knownParcels) {
-        if (!parcel.carriedBy) {
-            const distanceToParcel = distanceFromSearch(agentPaths, parcel);
-            if (!Number.isFinite(distanceToParcel)) continue;
+    for (const parcel of knownParcels) {
+        const distanceToParcel = distanceFromSearch(agentPaths, parcel);
+        if (!Number.isFinite(distanceToParcel)) continue;
 
-            const parcelPaths = shortestPathsFrom(beliefs, parcel);
-            const delivery = nearestReachableTarget(parcelPaths, beliefs.world.deliveries.values());
-            if (!delivery) continue;
+        const parcelPaths = shortestPathsFrom(beliefs, parcel);
+        const delivery = nearestReachableTarget(parcelPaths, beliefs.world.deliveries.values());
+        if (!delivery) continue;
 
-            const pickupCost = distanceToParcel + delivery.distance;
-            const expectedNewParcelRewardAtDelivery = parcel.reward - (beliefs.world.decayPerMove() * pickupCost);
-            if (expectedNewParcelRewardAtDelivery <= 0) continue;
+        const pickupCost = distanceToParcel + delivery.distance;
+        const expectedNewParcelRewardAtDelivery = Math.max(
+            0,
+            parcel.reward - beliefs.world.decayPerMove() * pickupCost
+        );
+        if (expectedNewParcelRewardAtDelivery <= 0) continue;
 
-            const utility = pickUpUtility(beliefs, parcel, distanceToParcel, delivery.distance);
-            if (utility > 0) desires.push({ type: 'go_pick_up', target: { x: parcel.x, y: parcel.y }, utility, id: parcel.id });
-        }
+        const utility = pickUpUtility(
+            beliefs,
+            pickupCost,
+            expectedNewParcelRewardAtDelivery
+        );
+        if (utility > 0) desires.push({ type: 'go_pick_up', target: { x: parcel.x, y: parcel.y }, utility, id: parcel.id });
     }
 
     if (beliefs.parcels.carried.size > 0) {

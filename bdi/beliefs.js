@@ -527,7 +527,7 @@ class Beliefs {
             this.me.update({ id, name, x, y, score });
         });
 
-        socket.onSensing(async (sensing) => {
+        socket.onSensing((sensing) => {
             this.world.updateVisiblePositions(sensing.positions ?? []);
             this.parcels.update(
                 sensing.parcels ?? [],
@@ -542,11 +542,11 @@ class Beliefs {
             this.world.markVisibleSpawners();
         });
 
-        socket.onConfig(async (config) => {
+        socket.onConfig((config) => {
             this.world.updateFromConfig(config);
         });
 
-        socket.onMap(async (reportedWidth, reportedHeight, tileset) => {
+        socket.onMap((reportedWidth, reportedHeight, tileset) => {
             this.world.updateFromMap(reportedWidth, reportedHeight, tileset);
         });
     }

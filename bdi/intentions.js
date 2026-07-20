@@ -25,10 +25,10 @@ export function reviseIntention(currentIntention, beliefs, desires) {
     if (currentIntention) {
         switch (currentIntention.type) {
             case 'go_pick_up': {
-                const pickupStillAvailable = desires.some(desire =>
+                const currentPickup = desires.find(desire =>
                     desire.type === 'go_pick_up' && desire.id === currentIntention.id
                 );
-                if (pickupStillAvailable) return currentIntention;
+                if (currentPickup) return currentPickup;
                 break;
             }
             case 'go_deliver': {
