@@ -128,10 +128,18 @@ export function generateDesires(beliefs) {
     }
 
     if (beliefs.parcels.carried.size > 0) {
-        const delivery = nearestReachableTarget(agentPaths, beliefs.world.deliveries.values());
-        if (delivery) {
-            const utility = deliverUtility(beliefs, delivery.distance);
-            if (utility > 0) desires.push({ type: 'go_deliver', target: { x: delivery.target.x, y: delivery.target.y }, utility });
+        for (const delivery of beliefs.world.deliveries.values()) {
+            const distanceToDelivery = distanceFromSearch(agentPaths, delivery);
+            if (!Number.isFinite(distanceToDelivery)) continue;
+
+            const utility = deliverUtility(beliefs, distanceToDelivery);
+            if (utility > 0) {
+                desires.push({
+                    type: 'go_deliver',
+                    target: { x: delivery.x, y: delivery.y },
+                    utility,
+                });
+            }
         }
     }
 
@@ -139,9 +147,6 @@ export function generateDesires(beliefs) {
     if (!hasPickupDesire && beliefs.parcels.carried.size === 0) {
         const now = Date.now();
         const movementDuration = Math.max(1, beliefs.world.movementDuration);
-        let bestSpawner = null;
-        let bestPathDistance = Infinity;
-        let bestUtility = -Infinity;
 
         for (const spawner of beliefs.world.spawners.values()) {
             if (beliefs.world.isVisible(spawner)) continue;
@@ -152,21 +157,10 @@ export function generateDesires(beliefs) {
             const lastCheckedAt = spawner.lastCheckedAt ?? now;
             const timeSinceCheck = Math.max(0, now - lastCheckedAt);
             const movesSinceCheck = 1 + timeSinceCheck / movementDuration;
-            const explorationUtility = spawnerExplorationUtility(movesSinceCheck, pathDistance);
-
-            if (explorationUtility > bestUtility
-                || (explorationUtility === bestUtility && pathDistance < bestPathDistance)) {
-                bestSpawner = spawner;
-                bestPathDistance = pathDistance;
-                bestUtility = explorationUtility;
-            }
-        }
-
-        if (bestSpawner) {
             desires.push({
                 type: 'go_to_spawner',
-                target: { x: bestSpawner.x, y: bestSpawner.y },
-                utility: bestUtility,
+                target: { x: spawner.x, y: spawner.y },
+                utility: spawnerExplorationUtility(movesSinceCheck, pathDistance),
             });
         }
     }

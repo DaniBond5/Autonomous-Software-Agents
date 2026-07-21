@@ -13,6 +13,11 @@ function selectBestDesire(desires) {
     return best;
 }
 
+/** Returns whether two desires refer to the same map tile. */
+function sameTarget(first, second) {
+    return first.x === second.x && first.y === second.y;
+}
+
 /**
  * Keeps the current intention while its goal is still valid, otherwise
  * replaces it with the currently most useful desire.
@@ -34,7 +39,10 @@ export function reviseIntention(currentIntention, beliefs, desires) {
             case 'go_deliver': {
                 if (beliefs.parcels.carried.size === 0) break;
 
-                const currentDelivery = desires.find(desire => desire.type === 'go_deliver');
+                const currentDelivery = desires.find(desire =>
+                    desire.type === 'go_deliver'
+                    && sameTarget(desire.target, currentIntention.target)
+                );
                 const bestPickup = selectBestDesire(
                     desires.filter(desire => desire.type === 'go_pick_up')
                 );
@@ -47,10 +55,17 @@ export function reviseIntention(currentIntention, beliefs, desires) {
                 break;
             }
             case 'go_to_spawner': {
+                const currentSpawner = desires.find(desire =>
+                    desire.type === 'go_to_spawner'
+                    && sameTarget(desire.target, currentIntention.target)
+                );
                 const targetVisible = beliefs.world.isVisible(currentIntention.target);
                 const pickupAvailable = desires.some(desire => desire.type === 'go_pick_up');
-                if (!targetVisible && beliefs.parcels.carried.size === 0 && !pickupAvailable) {
-                    return currentIntention;
+                if (currentSpawner
+                    && !targetVisible
+                    && beliefs.parcels.carried.size === 0
+                    && !pickupAvailable) {
+                    return currentSpawner;
                 }
                 break;
             }

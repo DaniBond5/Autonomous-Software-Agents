@@ -2,12 +2,16 @@ import { readFile } from "node:fs/promises";
 import { onlineSolver } from "@unitn-asa/pddl-client";
 import {
     isMoveAllowed,
-    isPositionTraversable
+    isPositionTraversable,
+    isPushGeometryAllowed,
+    isPushTransitionAllowed
 } from "../utils/geometry.js";
 
 const DOMAIN_NAME = "deliveroo-crates";
 const DEFAULT_TIMEOUT_MS = 10000;
-const DEFAULT_RETRY_MS = 5000;
+const DEFAULT_DEFER_MS = 5000;
+const DEFAULT_MOVEMENT_DURATION_MS = 1000;
+const BLOCKING_AGENT_WAIT_MOVES = 2;
 
 function positiveEnvironmentNumber(name, fallback) {
     const value = Number(process.env[name]);
@@ -18,9 +22,9 @@ const PDDL_TIMEOUT_MS = positiveEnvironmentNumber(
     "PDDL_TIMEOUT_MS",
     DEFAULT_TIMEOUT_MS
 );
-const PDDL_RETRY_MS = positiveEnvironmentNumber(
+const PDDL_DEFER_MS = positiveEnvironmentNumber(
     "PDDL_RETRY_MS",
-    DEFAULT_RETRY_MS
+    DEFAULT_DEFER_MS
 );
 
 const domainTextPromise = readFile(
@@ -46,18 +50,18 @@ const domainTextPromise = readFile(
 
 /**
  * @typedef {Object} ActiveCratePlan
- * @property {string} problemKey
  * @property {string} intentionKey
- * @property {{x: number, y: number}} target
+ * @property {{x: number, y: number}} finalTarget
+ * @property {{x: number, y: number}} planningGoal
+ * @property {'local'|'global'} mode
  * @property {PddlMoveAction[]} actions
  * @property {number} nextIndex
  * @property {PddlMoveAction | null} pendingAction
+ * @property {number | null} blockedSince
  */
 
 /** @type {ActiveCratePlan | null} */
 let activePlan = null;
-let lastFailedProblemKey = null;
-let lastFailedAt = 0;
 
 const directions = [
     { dx: 1, dy: 0 },
@@ -111,7 +115,10 @@ function isAlignedPush(behind, from, to) {
         && firstDy === secondDy;
 }
 
-function buildProblemKey(beliefs, intentionKey, target) {
+function buildProblemKey(
+    beliefs,
+    { intentionKey, finalTarget, planningGoal, mode }
+) {
     const currentPosition = roundPosition(beliefs.me.pos);
     const crateState = [...beliefs.crates.known.values()]
         .map(crate => `${encodeURIComponent(crate.id)}:${crate.x},${crate.y}`)
@@ -120,14 +127,16 @@ function buildProblemKey(beliefs, intentionKey, target) {
 
     return [
         `intention=${encodeURIComponent(intentionKey)}`,
+        `mode=${mode}`,
         `agent=${currentPosition.x},${currentPosition.y}`,
-        `target=${target.x},${target.y}`,
+        `goal=${planningGoal.x},${planningGoal.y}`,
+        `target=${finalTarget.x},${finalTarget.y}`,
         `crates=${crateState}`
     ].join("|");
 }
 
-function buildProblem(beliefs, target) {
-    if (!validPosition(beliefs?.me?.pos) || !validPosition(target)) {
+function buildProblem(beliefs, planningGoal) {
+    if (!validPosition(beliefs?.me?.pos) || !validPosition(planningGoal)) {
         return { error: "invalid agent position or target" };
     }
 
@@ -147,7 +156,7 @@ function buildProblem(beliefs, target) {
     }
 
     const currentTileName = tileNameByPosition.get(positionKey(currentPosition));
-    const targetTileName = tileNameByPosition.get(positionKey(target));
+    const targetTileName = tileNameByPosition.get(positionKey(planningGoal));
     if (!currentTileName || !targetTileName) {
         return { error: "agent position or target is not traversable" };
     }
@@ -232,8 +241,7 @@ function buildProblem(beliefs, target) {
             if (
                 behindName
                 && toName
-                && beliefs.world.isCrateSpace(to)
-                && isMoveAllowed(beliefs, behind, from)
+                && isPushGeometryAllowed(beliefs, behind, from, to)
             ) {
                 init.push(`(push-line ${behindName} ${fromName} ${toName})`);
             }
@@ -404,11 +412,12 @@ function validateNextAction(action, beliefs) {
         !crate
         || !samePosition(action.to, action.crateFrom)
         || crate.id !== action.crateId
-        || !beliefs.world.isCrateSpace(action.crateFrom)
-        || !beliefs.world.isCrateSpace(action.crateTo)
-        || beliefs.crates.isOccupied(action.crateTo)
-        || !isMoveAllowed(beliefs, action.from, action.to)
-        || !isAlignedPush(action.from, action.crateFrom, action.crateTo)
+        || !isPushTransitionAllowed(
+            beliefs,
+            action.from,
+            action.crateFrom,
+            action.crateTo
+        )
         || action.dir !== expectedDirection
     ) {
         return "invalid";
@@ -418,10 +427,13 @@ function validateNextAction(action, beliefs) {
     return "valid";
 }
 
-function recordFailure(problemKey, message) {
-    lastFailedProblemKey = problemKey;
-    lastFailedAt = Date.now();
-    console.warn(`[pddl] ${message}; retry delayed ${PDDL_RETRY_MS} ms`);
+function deferredResult(reason) {
+    console.warn(`[pddl] ${reason}; target temporarily deferred`);
+    return {
+        status: "deferred",
+        reason,
+        retryAfterMs: PDDL_DEFER_MS,
+    };
 }
 
 async function solveWithTimeout(domain, problem) {
@@ -441,124 +453,142 @@ async function solveWithTimeout(domain, problem) {
     return result;
 }
 
+function blockingAgentTimeoutMs(beliefs) {
+    const configuredDuration = beliefs?.world?.movementDuration;
+    const movementDuration = Number.isFinite(configuredDuration)
+        && configuredDuration > 0
+        ? configuredDuration
+        : DEFAULT_MOVEMENT_DURATION_MS;
+    return movementDuration * BLOCKING_AGENT_WAIT_MOVES;
+}
+
 function nextActiveAction(beliefs) {
-    if (!activePlan || activePlan.pendingAction) return null;
+    if (activePlan.pendingAction) {
+        return { status: "wait", reason: "action outcome pending" };
+    }
     if (activePlan.nextIndex >= activePlan.actions.length) {
-        invalidateCratePlan("plan exhausted before ordinary navigation resumed");
-        return null;
+        activePlan = null;
+        return { status: "completed" };
     }
 
     const action = activePlan.actions[activePlan.nextIndex];
     const validation = validateNextAction(action, beliefs);
-    if (validation === "agent-blocked") return null;
+    if (validation === "agent-blocked") {
+        const now = Date.now();
+        if (activePlan.blockedSince == null) {
+            activePlan.blockedSince = now;
+            console.log("[pddl] waiting for blocking agent");
+        }
+        if (now - activePlan.blockedSince < blockingAgentTimeoutMs(beliefs)) {
+            return { status: "wait", reason: "blocking agent" };
+        }
+
+        console.warn("[pddl] blocking agent timeout");
+        invalidateCratePlan("blocking agent timeout");
+        return deferredResult("blocking agent timeout");
+    }
+    activePlan.blockedSince = null;
     if (validation !== "valid") {
         invalidateCratePlan("next action is no longer applicable");
-        return null;
+        return {
+            status: "invalidated",
+            reason: "next action is no longer applicable",
+        };
     }
 
     activePlan.pendingAction = action;
-    activePlan.problemKey = buildProblemKey(
-        beliefs,
-        activePlan.intentionKey,
-        activePlan.target
-    );
     if (action.kind === "push") {
         console.log(`[pddl] push ${action.crateId} returned to agent cycle`);
     }
-    return action;
+    return { status: "action", action };
 }
 
 /**
- * Returns one validated PDDL action for a crate-blocked target, or null.
- * @returns {Promise<PddlMoveAction | null>}
+ * Returns one explicit result for a local or global crate route.
+ * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {{intentionKey:string,finalTarget:{x:number,y:number},planningGoal:{x:number,y:number},mode:'local'|'global'}} request
+ * @returns {Promise<{status:'action',action:PddlMoveAction}|{status:'completed'}|{status:'wait',reason:string}|{status:'no-plan'}|{status:'deferred',reason:string,retryAfterMs:number}|{status:'invalidated',reason:string}>}
  */
-export async function planCrateFallback(beliefs, intentionKey, target) {
+export async function planCrateRoute(beliefs, request) {
+    const { intentionKey, finalTarget, planningGoal, mode } = request ?? {};
     if (
         !validPosition(beliefs?.me?.pos)
-        || !validPosition(target)
+        || !validPosition(finalTarget)
+        || !validPosition(planningGoal)
+        || (mode !== "local" && mode !== "global")
+        || typeof intentionKey !== "string"
         || !(beliefs?.crates?.known instanceof Map)
     ) {
-        console.warn("[pddl] invalid planning input");
-        return null;
+        return deferredResult("invalid planning input");
     }
 
     if (
         activePlan
         && (
             activePlan.intentionKey !== intentionKey
-            || !samePosition(activePlan.target, target)
+            || activePlan.mode !== mode
+            || !samePosition(activePlan.finalTarget, finalTarget)
+            || !samePosition(activePlan.planningGoal, planningGoal)
         )
     ) {
-        invalidateCratePlan("intention changed");
+        invalidateCratePlan("planning request changed");
     }
 
     if (activePlan) return nextActiveAction(beliefs);
 
-    const problemKey = buildProblemKey(beliefs, intentionKey, target);
-    if (
-        problemKey === lastFailedProblemKey
-        && Date.now() - lastFailedAt < PDDL_RETRY_MS
-    ) {
-        return null;
-    }
-
-    const snapshot = buildProblem(beliefs, target);
-    if (snapshot.error) {
-        recordFailure(problemKey, snapshot.error);
-        return null;
-    }
+    const problemKey = buildProblemKey(beliefs, request);
+    const snapshot = buildProblem(beliefs, planningGoal);
+    if (snapshot.error) return deferredResult(snapshot.error);
 
     const domain = await domainTextPromise;
-    if (!domain) {
-        recordFailure(problemKey, "domain unavailable");
-        return null;
-    }
+    if (!domain) return deferredResult("domain unavailable");
 
     const startedAt = Date.now();
-    console.log("[pddl] solve started");
+    console.log(`[pddl] ${mode} solve started`);
     const solverResult = await solveWithTimeout(domain, snapshot.problem);
 
     if (solverResult.status === "timeout") {
-        recordFailure(problemKey, `solve timed out after ${PDDL_TIMEOUT_MS} ms`);
-        return null;
+        return deferredResult(
+            `solve timed out after ${PDDL_TIMEOUT_MS} ms`
+        );
     }
     if (solverResult.status === "rejected") {
         const errorMessage = solverResult.error instanceof Error
             ? solverResult.error.message
             : String(solverResult.error ?? "unknown error");
-        recordFailure(problemKey, `solver error: ${errorMessage}`);
-        return null;
+        return deferredResult(
+            `solver error: ${errorMessage}`
+        );
     }
 
-    const currentProblemKey = buildProblemKey(beliefs, intentionKey, target);
+    const currentProblemKey = buildProblemKey(beliefs, request);
     if (currentProblemKey !== problemKey) {
         console.log("[pddl] solve result discarded because state changed");
-        return null;
+        return { status: "invalidated", reason: "state changed during solve" };
     }
 
     if (solverResult.plan == null) {
-        recordFailure(problemKey, "solver returned no plan");
-        return null;
+        return { status: "no-plan" };
     }
 
-    const normalized = normalizePlan(solverResult.plan, snapshot, target);
+    const normalized = normalizePlan(solverResult.plan, snapshot, planningGoal);
     if (normalized.error) {
-        recordFailure(problemKey, `malformed plan: ${normalized.error}`);
-        return null;
+        const reason = `malformed plan: ${normalized.error}`;
+        return deferredResult(reason);
     }
 
     activePlan = {
-        problemKey,
         intentionKey,
-        target: { x: target.x, y: target.y },
+        finalTarget: { x: finalTarget.x, y: finalTarget.y },
+        planningGoal: { x: planningGoal.x, y: planningGoal.y },
+        mode,
         actions: normalized.actions,
         nextIndex: 0,
-        pendingAction: null
+        pendingAction: null,
+        blockedSince: null,
     };
-    lastFailedProblemKey = null;
-    lastFailedAt = 0;
     console.log(
-        `[pddl] solve completed in ${Date.now() - startedAt} ms `
+        `[pddl] ${mode} solve completed in ${Date.now() - startedAt} ms `
         + `with ${normalized.actions.length} actions`
     );
 
@@ -568,21 +598,27 @@ export async function planCrateFallback(beliefs, intentionKey, target) {
 /** Advances or invalidates the active plan after its pending action outcome. */
 export function reconcileCratePlanOutcome(outcome) {
     const action = outcome?.action;
-    if (action?.source !== "pddl" || !activePlan?.pendingAction) return;
-    if (action !== activePlan.pendingAction) return;
+    if (action?.source !== "pddl" || !activePlan?.pendingAction) {
+        return { status: "ignored" };
+    }
+    if (action !== activePlan.pendingAction) return { status: "ignored" };
 
     if (outcome.status === "succeeded") {
         activePlan.nextIndex += 1;
         activePlan.pendingAction = null;
+        activePlan.blockedSince = null;
+        return { status: "advanced" };
     } else if (outcome.status === "failed") {
-        recordFailure(activePlan.problemKey, "PDDL action failed");
         invalidateCratePlan("PDDL action failed");
+        return { status: "invalidated", reason: "PDDL action failed" };
     }
+
+    return { status: "ignored" };
 }
 
-/** Invalidates the single active plan, if present. */
+/** Clears the active plan. */
 export function invalidateCratePlan(reason) {
-    if (!activePlan) return;
+    const hadActivePlan = activePlan != null;
     activePlan = null;
-    console.log(`[pddl] plan invalidated: ${reason}`);
+    if (hadActivePlan) console.log(`[pddl] plan invalidated: ${reason}`);
 }
