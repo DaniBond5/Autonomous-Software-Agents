@@ -3,6 +3,7 @@ import { beliefs } from "./bdi/beliefs.js";
 import { generateDesires } from "./bdi/desires.js";
 import { reviseIntention } from "./bdi/intentions.js";
 import {
+    filterPlannableDesires,
     planNextAction,
     reconcilePlanningOutcome
 } from "./bdi/planning.js";
@@ -19,7 +20,10 @@ async function runAgentLoop() {
     console.log("[agent] BDI loop started");
 
     while (true) {
-        const desires = generateDesires(beliefs);
+        const desires = filterPlannableDesires(
+            generateDesires(beliefs),
+            beliefs
+        );
 
         currentIntention = reviseIntention(
             currentIntention,
@@ -27,8 +31,18 @@ async function runAgentLoop() {
             desires
         );
 
-        const action = currentIntention
-            ? await planNextAction(currentIntention, beliefs)
+        const planningResult = await planNextAction(
+            currentIntention,
+            beliefs
+        );
+
+        if (planningResult.status === "unreachable"
+            || planningResult.status === "deferred") {
+            currentIntention = null;
+        }
+
+        const action = planningResult.status === "action"
+            ? planningResult.action
             : null;
 
         const outcome = await executeAction(

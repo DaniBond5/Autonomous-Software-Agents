@@ -179,6 +179,126 @@ export function isMoveAllowed(beliefs, from, to) {
         || dy !== -destinationDirection.dy;
 }
 
+/** Checks whether three tiles form a valid push line on the static map. */
+export function isPushGeometryAllowed(
+    beliefs,
+    behind,
+    cratePosition,
+    destination
+) {
+    const positions = [behind, cratePosition, destination];
+    if (!beliefs || positions.some(position =>
+        !Number.isInteger(position?.x) || !Number.isInteger(position?.y))) {
+        return false;
+    }
+
+    const firstDx = cratePosition.x - behind.x;
+    const firstDy = cratePosition.y - behind.y;
+    const secondDx = destination.x - cratePosition.x;
+    const secondDy = destination.y - cratePosition.y;
+    return Math.abs(firstDx) + Math.abs(firstDy) === 1
+        && firstDx === secondDx
+        && firstDy === secondDy
+        && isPositionTraversable(beliefs, behind)
+        && isPositionTraversable(beliefs, destination)
+        && isMoveAllowed(beliefs, behind, cratePosition)
+        && beliefs.world.isCrateSpace(cratePosition)
+        && beliefs.world.isCrateSpace(destination);
+}
+
+/** Checks whether a geometrically valid push applies to the current crates. */
+export function isPushTransitionAllowed(
+    beliefs,
+    behind,
+    cratePosition,
+    destination
+) {
+    return isPushGeometryAllowed(beliefs, behind, cratePosition, destination)
+        && beliefs.crates.getAt(cratePosition) != null
+        && !beliefs.crates.isOccupied(destination);
+}
+
+/**
+ * Finds a directed corridor whose crate crossings have a valid initial push.
+ * It selects entry/exit for PDDL without simulating subsequent crate states.
+ * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {{x: number, y: number}} goalTile
+ * @returns {false | {entry:{x:number,y:number},exit:{x:number,y:number}}}
+ */
+export function findCrateCorridor(beliefs, goalTile) {
+    const startingPosition = beliefs?.me?.pos;
+    if (!goalTile || !startingPosition
+        || !isPositionTraversable(beliefs, startingPosition)) return false;
+
+    const start = { x: startingPosition.x, y: startingPosition.y };
+    const startKey = positionKey(start);
+    const goalKey = positionKey(goalTile);
+    if (startKey === goalKey) return false;
+
+    const search = {
+        start,
+        distances: new Map([[startKey, 0]]),
+        predecessors: new Map(),
+    };
+    const frontier = [start];
+    let frontierIndex = 0;
+
+    while (frontierIndex < frontier.length) {
+        const current = frontier[frontierIndex++];
+        const currentDistance = search.distances.get(positionKey(current));
+
+        for (const { dx, dy } of CARDINAL_DIRECTIONS) {
+            const neighbor = { x: current.x + dx, y: current.y + dy };
+            const crate = beliefs.crates.getAt(neighbor);
+            const allowed = crate
+                ? isPushTransitionAllowed(
+                    beliefs,
+                    current,
+                    neighbor,
+                    { x: neighbor.x + dx, y: neighbor.y + dy }
+                )
+                : isMoveAllowed(beliefs, current, neighbor);
+            if (!allowed) continue;
+
+            const neighborKey = positionKey(neighbor);
+            if (search.distances.has(neighborKey)) continue;
+
+            search.distances.set(neighborKey, currentDistance + 1);
+            search.predecessors.set(neighborKey, current);
+            if (neighborKey === goalKey) {
+                const path = pathFromSearch(search, goalTile);
+                return crateCorridorFromPath(beliefs, start, path);
+            }
+            frontier.push(neighbor);
+        }
+    }
+
+    return false;
+}
+
+function crateCorridorFromPath(beliefs, start, path) {
+    let firstCrateIndex = -1;
+    let lastCrateIndex = -1;
+
+    for (let index = 0; index < path.length; index += 1) {
+        if (!beliefs.crates.isOccupied(path[index])) continue;
+        if (firstCrateIndex < 0) firstCrateIndex = index;
+        lastCrateIndex = index;
+    }
+
+    if (firstCrateIndex < 0) return false;
+    const entry = firstCrateIndex === 0 ? start : path[firstCrateIndex - 1];
+    const exit = path[lastCrateIndex + 1];
+    if (!exit
+        || !isPositionTraversable(beliefs, exit)
+        || beliefs.crates.isOccupied(exit)) return false;
+
+    return {
+        entry: { x: entry.x, y: entry.y },
+        exit: { x: exit.x, y: exit.y },
+    };
+}
+
 /**
  * This function returns an array of neighboring positions given one.
  * @param {import("../bdi/beliefs.js").beliefs} beliefs 
