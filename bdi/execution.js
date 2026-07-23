@@ -1,5 +1,8 @@
-const DEBUG = true; // set to false to silence all [agent] debug logs
-const dbg = (...args) => { if (DEBUG) console.log("[agent]", ...args); };
+import config from "../config.js";
+
+const dbg = (...args) => {
+    if (config.debug) console.log("[agent]", ...args);
+};
 
 /**
  * @typedef {Object} ActionOutcome

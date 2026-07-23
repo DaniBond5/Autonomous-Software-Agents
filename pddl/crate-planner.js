@@ -1,3 +1,4 @@
+import config from "../config.js";
 import { readFile } from "node:fs/promises";
 import { onlineSolver } from "@unitn-asa/pddl-client";
 import {
@@ -8,24 +9,8 @@ import {
 } from "../utils/geometry.js";
 
 const DOMAIN_NAME = "deliveroo-crates";
-const DEFAULT_TIMEOUT_MS = 10000;
-const DEFAULT_DEFER_MS = 5000;
 const DEFAULT_MOVEMENT_DURATION_MS = 1000;
 const BLOCKING_AGENT_WAIT_MOVES = 2;
-
-function positiveEnvironmentNumber(name, fallback) {
-    const value = Number(process.env[name]);
-    return Number.isFinite(value) && value > 0 ? value : fallback;
-}
-
-const PDDL_TIMEOUT_MS = positiveEnvironmentNumber(
-    "PDDL_TIMEOUT_MS",
-    DEFAULT_TIMEOUT_MS
-);
-const PDDL_DEFER_MS = positiveEnvironmentNumber(
-    "PDDL_RETRY_MS",
-    DEFAULT_DEFER_MS
-);
 
 const domainTextPromise = readFile(
     new URL("./crates-domain.pddl", import.meta.url),
@@ -432,7 +417,7 @@ function deferredResult(reason) {
     return {
         status: "deferred",
         reason,
-        retryAfterMs: PDDL_DEFER_MS,
+        retryAfterMs: config.pddl.retryMs,
     };
 }
 
@@ -445,7 +430,7 @@ async function solveWithTimeout(domain, problem) {
     const timeout = new Promise(resolve => {
         timeoutId = setTimeout(
             () => resolve({ status: "timeout" }),
-            PDDL_TIMEOUT_MS
+            config.pddl.timeoutMs
         );
     });
     const result = await Promise.race([solverResult, timeout]);
@@ -549,7 +534,7 @@ export async function planCrateRoute(beliefs, request) {
 
     if (solverResult.status === "timeout") {
         return deferredResult(
-            `solve timed out after ${PDDL_TIMEOUT_MS} ms`
+            `solve timed out after ${config.pddl.timeoutMs} ms`
         );
     }
     if (solverResult.status === "rejected") {
