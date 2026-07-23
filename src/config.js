@@ -1,9 +1,6 @@
 import "dotenv/config";
 
-/**
- * Central configuration for local application settings.
- * Secrets and connection credentials remain in the environment.
- */
+// Connection credentials stay in the environment.
 const config = {
     deliveroo: {
         host: process.env.HOST,

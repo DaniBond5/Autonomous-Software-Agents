@@ -5,9 +5,9 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  */
 
 /**
- * A desire is a candidate goal the agent could pursue. Every desire exposes
- * the SAME `target`, so the intention layer can move toward it without knowing
- * its type. The terminal action (pickup / putdown / nothing) is dispatched on `type`.
+ * A desire is a candidate goal the agent could pursue. All variants expose a
+ * `target`, so intention handling remains independent of the desire type.
+ * The terminal action (pickup / putdown / nothing) is dispatched on `type`.
  *
  * @typedef {Object} Desire
  * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'} type
@@ -82,8 +82,6 @@ function deliverUtility(beliefs, distanceToDelivery) {
 }
 
 /**
- * movesSinceCheck = 1 + (now - lastCheckedAt) / movementDuration
- * explorationUtility = movesSinceCheck / max(1, pathDistance)
  * Spawners not observed recently gain priority over time, while BFS distance penalizes costly trips.
  * @param {number} movesSinceCheck
  * @param {number} pathDistance

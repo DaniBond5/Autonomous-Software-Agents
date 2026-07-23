@@ -14,12 +14,11 @@ const dbg = (...args) => {
 
 function sdkFailure(action, error) {
     const message = error instanceof Error ? error.message : String(error);
-    dbg(`${action.action} FAILED (${message})`);
+    dbg(`${action.action} failed: ${message}`);
     return { status: 'failed', action, result: null, error };
 }
 
 /**
- * Executes one planned action through the SDK.
  * Movement and self-position synchronization remain one operation.
  * @param {import("./planning.js").Action | null} action
  * @param {import("./beliefs.js").beliefs} beliefs
@@ -39,7 +38,7 @@ export async function executeAction(action, beliefs, socket) {
                 return sdkFailure(action, error);
             }
             if (result === false) {
-                dbg(`move ${action.dir} FAILED (blocked)`);
+                dbg(`move ${action.dir} failed: blocked`);
                 return { status: 'failed', action, result };
             }
             beliefs.me.applyMovement(result);
@@ -54,10 +53,10 @@ export async function executeAction(action, beliefs, socket) {
                 return sdkFailure(action, error);
             }
             if (!Array.isArray(result) || result.length === 0) {
-                dbg('pickup FAILED (no parcels)');
+                dbg('pickup failed: no parcels');
                 return { status: 'failed', action, result };
             }
-            dbg('PICKUP');
+            dbg('pickup succeeded');
             return { status: 'succeeded', action, result };
         }
         case 'putdown': {
@@ -69,10 +68,10 @@ export async function executeAction(action, beliefs, socket) {
                 return sdkFailure(action, error);
             }
             if (!Array.isArray(result) || result.length === 0) {
-                dbg('putdown FAILED (no parcels)');
+                dbg('putdown failed: no parcels');
                 return { status: 'failed', action, result };
             }
-            dbg('PUTDOWN');
+            dbg('putdown succeeded');
             return { status: 'succeeded', action, result };
         }
         default:

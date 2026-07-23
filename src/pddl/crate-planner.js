@@ -413,7 +413,9 @@ function validateNextAction(action, beliefs) {
 }
 
 function deferredResult(reason) {
-    console.warn(`[pddl] ${reason}; target temporarily deferred`);
+    console.warn(
+        `[pddl] target deferred for ${config.pddl.retryMs} ms: ${reason}`
+    );
     return {
         status: "deferred",
         reason,
@@ -468,7 +470,7 @@ function nextActiveAction(beliefs) {
             return { status: "wait", reason: "blocking agent" };
         }
 
-        console.warn("[pddl] blocking agent timeout");
+        console.warn("[pddl] blocking agent wait expired");
         invalidateCratePlan("blocking agent timeout");
         return deferredResult("blocking agent timeout");
     }
@@ -483,7 +485,7 @@ function nextActiveAction(beliefs) {
 
     activePlan.pendingAction = action;
     if (action.kind === "push") {
-        console.log(`[pddl] push ${action.crateId} returned to agent cycle`);
+        console.log(`[pddl] push ready: crate ${action.crateId}`);
     }
     return { status: "action", action };
 }
@@ -529,7 +531,7 @@ export async function planCrateRoute(beliefs, request) {
     if (!domain) return deferredResult("domain unavailable");
 
     const startedAt = Date.now();
-    console.log(`[pddl] ${mode} solve started`);
+    console.log(`[pddl] ${mode} planning started`);
     const solverResult = await solveWithTimeout(domain, snapshot.problem);
 
     if (solverResult.status === "timeout") {
@@ -548,11 +550,12 @@ export async function planCrateRoute(beliefs, request) {
 
     const currentProblemKey = buildProblemKey(beliefs, request);
     if (currentProblemKey !== problemKey) {
-        console.log("[pddl] solve result discarded because state changed");
+        console.warn("[pddl] plan invalidated: state changed during solve");
         return { status: "invalidated", reason: "state changed during solve" };
     }
 
     if (solverResult.plan == null) {
+        console.warn("[pddl] no plan found");
         return { status: "no-plan" };
     }
 
@@ -573,8 +576,8 @@ export async function planCrateRoute(beliefs, request) {
         blockedSince: null,
     };
     console.log(
-        `[pddl] ${mode} solve completed in ${Date.now() - startedAt} ms `
-        + `with ${normalized.actions.length} actions`
+        `[pddl] plan ready: ${normalized.actions.length} actions in `
+        + `${Date.now() - startedAt} ms`
     );
 
     return nextActiveAction(beliefs);
@@ -593,7 +596,8 @@ export function reconcileCratePlanOutcome(outcome) {
         activePlan.pendingAction = null;
         activePlan.blockedSince = null;
         return { status: "advanced" };
-    } else if (outcome.status === "failed") {
+    }
+    if (outcome.status === "failed") {
         invalidateCratePlan("PDDL action failed");
         return { status: "invalidated", reason: "PDDL action failed" };
     }
@@ -601,9 +605,8 @@ export function reconcileCratePlanOutcome(outcome) {
     return { status: "ignored" };
 }
 
-/** Clears the active plan. */
 export function invalidateCratePlan(reason) {
     const hadActivePlan = activePlan != null;
     activePlan = null;
-    if (hadActivePlan) console.log(`[pddl] plan invalidated: ${reason}`);
+    if (hadActivePlan) console.warn(`[pddl] plan invalidated: ${reason}`);
 }

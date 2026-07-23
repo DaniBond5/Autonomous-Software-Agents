@@ -1,4 +1,6 @@
-import { socket } from "./connection.js";
+import { DjsConnect } from "@unitn-asa/deliveroo-js-sdk";
+
+import config from "./config.js";
 import { beliefs } from "./bdi/beliefs.js";
 import { generateDesires } from "./bdi/desires.js";
 import { reviseIntention } from "./bdi/intentions.js";
@@ -9,6 +11,11 @@ import {
 } from "./bdi/planning.js";
 import { executeAction } from "./bdi/execution.js";
 
+const socket = DjsConnect(
+    config.deliveroo.host,
+    config.deliveroo.agents.bdi.token
+);
+
 const IDLE_WAIT_MS = 200;
 
 const wait = (ms) =>
@@ -17,7 +24,7 @@ const wait = (ms) =>
 async function runAgentLoop() {
     let currentIntention = null;
 
-    console.log("[agent] BDI loop started");
+    console.log("[agent] loop started");
 
     while (true) {
         const desires = filterPlannableDesires(
@@ -79,6 +86,6 @@ async function main() {
 }
 
 main().catch((error) => {
-    console.error("[agent] Fatal error:", error);
+    console.error("[agent] fatal error:", error);
     process.exitCode = 1;
 });
