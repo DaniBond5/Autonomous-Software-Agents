@@ -141,8 +141,7 @@ class Parcels {
             || !Array.isArray(outcome.result)) return;
 
         if (actionType === 'putdown') {
-            const carriedIds = [...this.carried.keys()];
-            for (const id of carriedIds) {
+            for (const id of this.carried.keys()) {
                 this.visible.delete(id);
                 this.known.delete(id);
             }
@@ -367,9 +366,8 @@ class World {
          */
         this.visiblePositions = new Set();
 
-        /** Can't use objects as key for maps, solution is to use a string defining the coordinates of the tile instead.
-         * Positions are unique anyway.
-         * This is the complete map of the current game.
+        /**
+         * Complete map topology keyed by coordinates.
          * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
          */
         this.tiles = new Map();
@@ -380,10 +378,7 @@ class World {
          */
         this.spawners = new Map();
 
-        /**
-         * This map stores the parcel delivery tiles
-         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
-         */
+        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>} */
         this.deliveries = new Map();
 
         /**
@@ -410,9 +405,7 @@ class World {
         this.rewardVariance = -1;
     }
 
-    /**
-     * Function that initialises all game data values given a IOConfig
-     *
+    /** Applies the server game configuration.
      * @param {import ("@unitn-asa/deliveroo-js-sdk/types/IOConfig.js").IOConfig} config
      */
     updateFromConfig(config) {
@@ -519,9 +512,6 @@ class Beliefs {
         this.world = new World();
     }
 
-    /**
-     * Wires the belief components to the socket sensing events.
-     */
     init(socket) {
         socket.onYou(({ id, name, x, y, score }) => {
             this.me.update({ id, name, x, y, score });

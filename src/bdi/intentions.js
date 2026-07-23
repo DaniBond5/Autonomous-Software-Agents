@@ -1,8 +1,3 @@
-/* ------------------------------------------------------------------ */
-/* DELIBERATION: what to pursue                                       */
-/* ------------------------------------------------------------------ */
-
-/** Selects the desire with the highest utility from an existing set. */
 function selectBestDesire(desires) {
     if (desires.length === 0) return null;
 
@@ -13,7 +8,6 @@ function selectBestDesire(desires) {
     return best;
 }
 
-/** Selects the highest-utility pickup or delivery without changing desire order. */
 function selectBestConcreteDesire(desires) {
     let best = null;
     for (const desire of desires) {
@@ -23,7 +17,6 @@ function selectBestConcreteDesire(desires) {
     return best;
 }
 
-/** Returns whether two desires refer to the same map tile. */
 function sameTarget(first, second) {
     return first.x === second.x && first.y === second.y;
 }

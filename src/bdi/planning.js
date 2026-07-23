@@ -78,12 +78,11 @@ export function filterPlannableDesires(desires, beliefs) {
 function suppressIntention(beliefs, key) {
     deferredIntentions.delete(key);
     suppressedIntentions.set(key, crateSignature(beliefs));
-    console.log("[pddl] target suppressed for unchanged crate state");
+    console.warn("[pddl] target suppressed until crate state changes");
 }
 
 function deferIntention(key, durationMs) {
     deferredIntentions.set(key, Date.now() + durationMs);
-    console.log(`[pddl] target deferred for ${durationMs} ms after a temporary problem`);
 }
 
 function discardCrateTask(reason) {
@@ -157,7 +156,7 @@ function findOrdinaryPath(beliefs, target, routeKey) {
             });
             if (replannedDetour === false) return { exists: true, path: false };
             activeDetour.currentPosition = currentPosition;
-            activeDetour.remainingPath = [...replannedDetour];
+            activeDetour.remainingPath = replannedDetour;
         }
         return { exists: true, path: activeDetour.remainingPath };
     }
@@ -174,7 +173,7 @@ function findOrdinaryPath(beliefs, target, routeKey) {
     activeDetour = {
         routeKey,
         currentPosition,
-        remainingPath: [...detour],
+        remainingPath: detour,
     };
     return { exists: true, path: activeDetour.remainingPath };
 }
@@ -185,7 +184,10 @@ function resultForPath(path, terminal, intention, beliefs) {
         return { status: "wait", reason: "ordinary route temporarily blocked" };
     }
     if (path.length === 0) {
-        dbg(`${intention.type}: ARRIVED at (${me.x},${me.y}) -> ${terminal ? terminal.action : 'idle'}`);
+        dbg(
+            `${intention.type}: reached (${me.x},${me.y})`
+            + (terminal ? `, next ${terminal.action}` : "")
+        );
         return terminal
             ? { status: "action", action: terminal }
             : { status: "idle" };
@@ -193,7 +195,10 @@ function resultForPath(path, terminal, intention, beliefs) {
 
     const dir = stepDir(me, path[0]);
     if (dir == null) return { status: "wait", reason: "invalid next path step" };
-    dbg(`${intention.type}: me(${me.x},${me.y}) -> next(${path[0].x},${path[0].y}) dir=${dir} | target(${intention.target.x},${intention.target.y}) dist=${path.length}`);
+    dbg(
+        `${intention.type}: move ${dir} to (${path[0].x},${path[0].y}), `
+        + `target (${intention.target.x},${intention.target.y}), remaining ${path.length}`
+    );
     return { status: "action", action: { action: "move", dir } };
 }
 
@@ -211,10 +216,9 @@ function createCrateTask(beliefs, intention, key) {
     if (!corridor) return;
 
     console.log(
-        `[pddl] crate corridor entry=(${corridor.entry.x},${corridor.entry.y}) `
-        + `exit=(${corridor.exit.x},${corridor.exit.y})`
+        `[pddl] local route selected: entry (${corridor.entry.x},${corridor.entry.y}), `
+        + `exit (${corridor.exit.x},${corridor.exit.y})`
     );
-    console.log("[pddl] approaching local entry");
 }
 
 function ensureCrateTask(beliefs, intention, key) {
@@ -267,7 +271,7 @@ async function planCratePhase(beliefs) {
     }
     if (task.phase === "local") {
         task.phase = "global";
-        console.log("[pddl] local plan unavailable -> global fallback");
+        console.log("[pddl] local plan unavailable: using global planning");
         return { status: "wait", reason: "switching to global fallback" };
     }
 
@@ -282,7 +286,7 @@ async function navigateThen(terminal, intention, beliefs) {
 
     if (ordinary.exists) {
         if (activeCrateTask) {
-            console.log("[pddl] ordinary path reopened -> return to BFS");
+            console.log("[pddl] ordinary route available: using BFS");
         }
         discardCrateTask("ordinary path available");
         return resultForPath(ordinary.path, terminal, intention, beliefs);
@@ -306,7 +310,7 @@ async function navigateThen(terminal, intention, beliefs) {
         );
         if (!approach.exists) {
             activeCrateTask.phase = "global";
-            console.log("[pddl] local entry unreachable -> global fallback");
+            console.log("[pddl] local entry unreachable: using global planning");
         } else if (approach.path === false) {
             return { status: "wait", reason: "local entry temporarily blocked" };
         } else if (approach.path.length > 0) {
@@ -341,7 +345,7 @@ export async function planNextAction(intention, beliefs) {
 
     const planner = planners[intention.type];
     if (!planner) {
-        console.warn(`[planNextAction] no planner for type ${intention.type}`);
+        console.warn(`[agent] unsupported intention: ${intention.type}`);
         resetNavigationState("unknown intention type");
         return { status: "unreachable", reason: "unknown intention type" };
     }

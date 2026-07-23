@@ -1,15 +1,3 @@
-/**
- * Calculates the Manhattan distance between two grid coordinates.
- * @param {{x: number, y: number}} a
- * @param {{x: number, y: number}} b
- * @returns {number}
- */
-export function distance({x: x1, y: y1}, {x: x2, y: y2}) {
-    const dx = Math.abs(Math.round(x1) - Math.round(x2));
-    const dy = Math.abs(Math.round(y1) - Math.round(y2));
-    return dx + dy;
-}
-
 const directionalTiles = {
     '↑': { dx: 0, dy: 1 },
     '→': { dx: 1, dy: 0 },
@@ -151,10 +139,10 @@ export function BFS(beliefs, goalTile, options = {}) {
 }
 
 /**
- * This function checks if a given position is traversable.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs 
+ * A tile is traversable when it exists and is not a wall.
+ * @param {import("../bdi/beliefs.js").beliefs} beliefs
  * @param {{x: number, y: number}} position
- * @returns false if the given position is not traversable by the agent or true if it is.
+ * @returns {boolean}
  */
 export function isPositionTraversable(beliefs, {x: positionX, y: positionY}) {
     const tile = beliefs.world.tiles.get(`${positionX},${positionY}`);
@@ -300,11 +288,10 @@ function crateCorridorFromPath(beliefs, start, path) {
 }
 
 /**
- * This function returns an array of neighboring positions given one.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs 
+ * @param {import("../bdi/beliefs.js").beliefs} beliefs
  * @param {{x: number, y: number}} position
  * @param {PathfindingOptions} [options]
- * @returns an array of the neighboring position of the one given as an argument.
+ * @returns {{x: number, y: number}[]}
  */
 function getNeighbors(beliefs, {x: positionX, y: positionY}, options = {}) {
     const neighbors = [];

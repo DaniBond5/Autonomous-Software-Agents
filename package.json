@@ -14,7 +14,7 @@
   "author": "",
   "type": "module",
   "scripts": {
-    "start": "node agent.js"
+    "start": "node src/agent.js"
   },
   "dependencies": {
     "@unitn-asa/deliveroo-js-sdk": "^1.3.10",
