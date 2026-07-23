@@ -1,3 +1,4 @@
+import config from "../config.js";
 import { BFS, findCrateCorridor } from "../utils/geometry.js";
 import {
     invalidateCratePlan,
@@ -5,8 +6,9 @@ import {
     reconcileCratePlanOutcome
 } from "../pddl/crate-planner.js";
 
-const DEBUG = true;
-const dbg = (...args) => { if (DEBUG) console.log("[agent]", ...args); };
+const dbg = (...args) => {
+    if (config.debug) console.log("[agent]", ...args);
+};
 
 /**
  * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'pddl',kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup'}|{action:'putdown'}} Action
