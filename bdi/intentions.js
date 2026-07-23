@@ -13,6 +13,16 @@ function selectBestDesire(desires) {
     return best;
 }
 
+/** Selects the highest-utility pickup or delivery without changing desire order. */
+function selectBestConcreteDesire(desires) {
+    let best = null;
+    for (const desire of desires) {
+        if (desire.type !== 'go_pick_up' && desire.type !== 'go_deliver') continue;
+        if (!best || desire.utility > best.utility) best = desire;
+    }
+    return best;
+}
+
 /** Returns whether two desires refer to the same map tile. */
 function sameTarget(first, second) {
     return first.x === second.x && first.y === second.y;
@@ -27,13 +37,31 @@ function sameTarget(first, second) {
  * @returns {import("./desires.js").Desire | null}
  */
 export function reviseIntention(currentIntention, beliefs, desires) {
+    const me = {
+        x: Math.round(beliefs.me.pos.x),
+        y: Math.round(beliefs.me.pos.y),
+    };
+    const pickupHere = desires.find(desire => {
+        if (desire.type !== 'go_pick_up' || !sameTarget(desire.target, me)) {
+            return false;
+        }
+        const visibleParcel = beliefs.parcels.visible.get(desire.id);
+        return visibleParcel && sameTarget(visibleParcel, me);
+    });
+    if (pickupHere) return pickupHere;
+
     if (currentIntention) {
         switch (currentIntention.type) {
             case 'go_pick_up': {
                 const currentPickup = desires.find(desire =>
                     desire.type === 'go_pick_up' && desire.id === currentIntention.id
                 );
-                if (currentPickup) return currentPickup;
+                if (currentPickup) {
+                    const bestConcrete = selectBestConcreteDesire(desires);
+                    return bestConcrete?.utility > currentPickup.utility
+                        ? bestConcrete
+                        : currentPickup;
+                }
                 break;
             }
             case 'go_deliver': {
@@ -43,15 +71,12 @@ export function reviseIntention(currentIntention, beliefs, desires) {
                     desire.type === 'go_deliver'
                     && sameTarget(desire.target, currentIntention.target)
                 );
-                const bestPickup = selectBestDesire(
-                    desires.filter(desire => desire.type === 'go_pick_up')
-                );
-
-                // Delivery persists unless a current pickup is strictly more useful.
-                if (currentDelivery && bestPickup?.utility > currentDelivery.utility) {
-                    return bestPickup;
+                if (currentDelivery) {
+                    const bestConcrete = selectBestConcreteDesire(desires);
+                    return bestConcrete?.utility > currentDelivery.utility
+                        ? bestConcrete
+                        : currentDelivery;
                 }
-                if (currentDelivery) return currentDelivery;
                 break;
             }
             case 'go_to_spawner': {
