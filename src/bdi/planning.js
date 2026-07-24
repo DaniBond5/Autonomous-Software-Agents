@@ -132,15 +132,15 @@ function findOrdinaryPath(beliefs, target, routeKey) {
 
     if (activeDetour?.routeKey !== routeKey) activeDetour = null;
     if (activeDetour) {
-        const expectedPosition = activeDetour.remainingPath[0];
-        if (samePosition(currentPosition, activeDetour.currentPosition)) {
-            // Keep the full path when the previous movement did not advance.
-        } else if (expectedPosition
-            && samePosition(currentPosition, expectedPosition)) {
-            activeDetour.remainingPath.shift();
-            activeDetour.currentPosition = currentPosition;
-        } else {
-            activeDetour = null;
+        if (!samePosition(currentPosition, activeDetour.currentPosition)) {
+            const expectedPosition = activeDetour.remainingPath[0];
+            if (expectedPosition
+                && samePosition(currentPosition, expectedPosition)) {
+                activeDetour.remainingPath.shift();
+                activeDetour.currentPosition = currentPosition;
+            } else {
+                activeDetour = null;
+            }
         }
     }
 

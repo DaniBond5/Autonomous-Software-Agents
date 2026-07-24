@@ -293,15 +293,16 @@ function crateCorridorFromPath(beliefs, start, path) {
  * @param {PathfindingOptions} [options]
  * @returns {{x: number, y: number}[]}
  */
-function getNeighbors(beliefs, {x: positionX, y: positionY}, options = {}) {
+function getNeighbors(beliefs, position, options = {}) {
     const neighbors = [];
 
-    for (const direction of CARDINAL_DIRECTIONS) {
-        const neighborX = positionX + direction.dx;
-        const neighborY = positionY + direction.dy;
-        const neighbor = { x: neighborX, y: neighborY };
+    for (const { dx, dy } of CARDINAL_DIRECTIONS) {
+        const neighbor = {
+            x: position.x + dx,
+            y: position.y + dy
+        };
 
-        if (isMoveAllowed(beliefs, { x: positionX, y: positionY }, neighbor)
+        if (isMoveAllowed(beliefs, position, neighbor)
             && !options.isBlocked?.(neighbor)) neighbors.push(neighbor);
     }
     return neighbors;
