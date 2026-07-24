@@ -1,4 +1,7 @@
 const positionKey = ({ x, y }) => `${x},${y}`;
+const isFinitePosition = position =>
+    Number.isFinite(position?.x)
+    && Number.isFinite(position?.y);
 
 function parseLocalDecayIntervalMs(event) {
     switch (event) {
@@ -103,15 +106,14 @@ class Parcels {
             if (!parcel.carriedBy && parcel.reward > 0) {
                 this.known.set(parcel.id, { ...parcel, observedAt });
                 this.carried.delete(parcel.id);
+                continue;
             }
-            else if (parcel.carriedBy === meId) {
-                this.known.delete(parcel.id);
-                if (parcel.reward <= 0) this.carried.delete(parcel.id);
-                else this.carried.set(parcel.id, parcel);
-            }
-            else {
-                this.known.delete(parcel.id);
+
+            this.known.delete(parcel.id);
+            if (parcel.carriedBy !== meId || parcel.reward <= 0) {
                 this.carried.delete(parcel.id);
+            } else {
+                this.carried.set(parcel.id, parcel);
             }
         }
 
@@ -164,7 +166,7 @@ class Parcels {
             this.visible.delete(id);
             this.known.delete(id);
 
-            const hasCurrentPosition = Number.isFinite(mePos?.x) && Number.isFinite(mePos?.y)
+            const hasCurrentPosition = isFinitePosition(mePos)
                 && mePos.x >= 0 && mePos.y >= 0;
             if (hasCurrentPosition) {
                 parcel.x = mePos.x;
@@ -172,7 +174,7 @@ class Parcels {
             }
 
             if (!meId || !Number.isFinite(parcel.reward)
-                || !Number.isFinite(parcel.x) || !Number.isFinite(parcel.y)) continue;
+                || !isFinitePosition(parcel)) continue;
 
             delete parcel.observedAt;
             this.carried.set(id, { ...parcel, carriedBy: meId });
@@ -235,8 +237,7 @@ class Crates {
             if (
                 !crate
                 || typeof crate.id !== 'string'
-                || !Number.isFinite(crate.x)
-                || !Number.isFinite(crate.y)
+                || !isFinitePosition(crate)
             ) {
                 continue;
             }
@@ -286,10 +287,8 @@ class Crates {
         const { crateId, crateFrom, crateTo } = action;
         if (
             typeof crateId !== 'string'
-            || !Number.isFinite(crateFrom?.x)
-            || !Number.isFinite(crateFrom?.y)
-            || !Number.isFinite(crateTo?.x)
-            || !Number.isFinite(crateTo?.y)
+            || !isFinitePosition(crateFrom)
+            || !isFinitePosition(crateTo)
         ) {
             return;
         }
@@ -455,7 +454,7 @@ class World {
         this.visiblePositions.clear();
 
         for (const position of positions ?? []) {
-            if (!Number.isFinite(position?.x) || !Number.isFinite(position?.y)) continue;
+            if (!isFinitePosition(position)) continue;
             this.visiblePositions.add(positionKey(position));
         }
     }
@@ -464,7 +463,7 @@ class World {
      * Returns whether a position was observed in the latest sensing event.
      */
     isVisible(position) {
-        if (!Number.isFinite(position?.x) || !Number.isFinite(position?.y)) return false;
+        if (!isFinitePosition(position)) return false;
         return this.visiblePositions.has(positionKey(position));
     }
 
@@ -513,20 +512,21 @@ class Beliefs {
     }
 
     init(socket) {
-        socket.onYou(({ id, name, x, y, score }) => {
-            this.me.update({ id, name, x, y, score });
+        socket.onYou((payload) => {
+            this.me.update(payload);
         });
 
         socket.onSensing((sensing) => {
             this.world.updateVisiblePositions(sensing.positions ?? []);
+            const isVisible = position => this.world.isVisible(position);
             this.parcels.update(
                 sensing.parcels ?? [],
                 this.me.id,
-                position => this.world.isVisible(position)
+                isVisible
             );
             this.crates.update(
                 sensing.crates ?? [],
-                position => this.world.isVisible(position)
+                isVisible
             );
             this.agents.update(sensing.agents ?? []);
             this.world.markVisibleSpawners();

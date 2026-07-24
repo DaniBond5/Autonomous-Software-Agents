@@ -122,7 +122,14 @@ export function generateDesires(beliefs) {
             pickupCost,
             expectedNewParcelRewardAtDelivery
         );
-        if (utility > 0) desires.push({ type: 'go_pick_up', target: { x: parcel.x, y: parcel.y }, utility, id: parcel.id });
+        if (utility > 0) {
+            desires.push({
+                type: 'go_pick_up',
+                target: { x: parcel.x, y: parcel.y },
+                utility,
+                id: parcel.id
+            });
+        }
     }
 
     if (beliefs.parcels.carried.size > 0) {

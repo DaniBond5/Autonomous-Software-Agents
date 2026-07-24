@@ -187,9 +187,7 @@ function buildProblem(beliefs, planningGoal) {
     const init = [`(at-agent ${currentTileName})`];
     for (const crate of crates) {
         const crateTileName = tileNameByPosition.get(positionKey(crate));
-        if (crateTileName) {
-            init.push(`(crate-at ${crateNameById.get(crate.id)} ${crateTileName})`);
-        }
+        init.push(`(crate-at ${crateNameById.get(crate.id)} ${crateTileName})`);
     }
 
     for (const tile of tiles) {
@@ -270,10 +268,7 @@ function normalizePlan(plan, snapshot, target) {
 
     const actions = [];
     let expectedAgentPosition = snapshot.currentPosition;
-    const cratePositionById = new Map(
-        [...snapshot.cratePositionById].map(([id, position]) =>
-            [id, { ...position }])
-    );
+    const cratePositionById = new Map(snapshot.cratePositionById);
     const crateIdByPosition = new Map(
         [...cratePositionById].map(([id, position]) =>
             [positionKey(position), id])
@@ -509,15 +504,14 @@ export async function planCrateRoute(beliefs, request) {
         return deferredResult("invalid planning input");
     }
 
-    if (
-        activePlan
+    const requestChanged = activePlan !== null
         && (
             activePlan.intentionKey !== intentionKey
             || activePlan.mode !== mode
             || !samePosition(activePlan.finalTarget, finalTarget)
             || !samePosition(activePlan.planningGoal, planningGoal)
-        )
-    ) {
+        );
+    if (requestChanged) {
         invalidateCratePlan("planning request changed");
     }
 
