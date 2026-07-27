@@ -11,7 +11,7 @@ const dbg = (...args) => {
 };
 
 /**
- * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'pddl',kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup'}|{action:'putdown'}} Action
+ * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'bfs'|'pddl',intentionKey?:string,kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup'}|{action:'putdown'}} Action
  */
 
 /**
@@ -24,6 +24,16 @@ const roundPos = position => ({
 });
 const positionKey = ({ x, y }) => `${x},${y}`;
 const samePosition = (a, b) => a.x === b.x && a.y === b.y;
+
+const DEFAULT_MOVEMENT_DURATION_MS = 1000;
+const BLOCKING_AGENT_WAIT_MOVES = 2;
+const MAX_CONSECUTIVE_BFS_MOVE_FAILURES = 2;
+
+/** @type {{intentionKey:string,blockedSince:number} | null} */
+let activeAgentBlock = null;
+
+/** @type {{intentionKey:string,consecutiveFailures:number} | null} */
+let activeBfsMoveFailure = null;
 
 /** @type {{routeKey:string,currentPosition:{x:number,y:number},remainingPath:{x:number,y:number}[]} | null} */
 let activeDetour = null;
@@ -85,6 +95,23 @@ function deferIntention(key, durationMs) {
     deferredIntentions.set(key, Date.now() + durationMs);
 }
 
+function resetAgentBlock() {
+    activeAgentBlock = null;
+}
+
+function resetBfsMoveFailure() {
+    activeBfsMoveFailure = null;
+}
+
+function agentBlockDurationMs(beliefs) {
+    const configuredDuration = beliefs.world.movementDuration;
+    const movementDuration = Number.isFinite(configuredDuration)
+        && configuredDuration > 0
+        ? configuredDuration
+        : DEFAULT_MOVEMENT_DURATION_MS;
+    return movementDuration * BLOCKING_AGENT_WAIT_MOVES;
+}
+
 function discardCrateTask(reason) {
     activeCrateTask = null;
     invalidateCratePlan(reason);
@@ -92,7 +119,32 @@ function discardCrateTask(reason) {
 
 function resetNavigationState(reason) {
     activeDetour = null;
+    resetAgentBlock();
+    resetBfsMoveFailure();
     discardCrateTask(reason);
+}
+
+function handleAgentBlock(beliefs, key) {
+    const now = Date.now();
+    if (activeAgentBlock?.intentionKey !== key) {
+        activeAgentBlock = {
+            intentionKey: key,
+            blockedSince: now
+        };
+        return { status: "wait", reason: "ordinary route temporarily blocked" };
+    }
+
+    const durationMs = agentBlockDurationMs(beliefs);
+    if (now - activeAgentBlock.blockedSince < durationMs) {
+        return { status: "wait", reason: "ordinary route temporarily blocked" };
+    }
+
+    deferIntention(key, durationMs);
+    console.warn(
+        `[agent] target deferred for ${durationMs} ms: persistent agent blocking`
+    );
+    resetNavigationState("persistent agent blocking");
+    return { status: "deferred", reason: "persistent agent blocking" };
 }
 
 function stepDir(from, to) {
@@ -149,12 +201,20 @@ function findOrdinaryPath(beliefs, target, routeKey) {
             activeDetour = null;
             return { exists: true, path: [] };
         }
-        if (isCrateBlocked(activeDetour.remainingPath[0])
-            || beliefs.agents.isOccupied(activeDetour.remainingPath[0])) {
+        const nextPosition = activeDetour.remainingPath[0];
+        const blockedByCrate = isCrateBlocked(nextPosition);
+        const blockedByAgent = beliefs.agents.isOccupied(nextPosition);
+        if (blockedByCrate || blockedByAgent) {
             const replannedDetour = BFS(beliefs, target, {
                 isBlocked: isBlockedForDetour,
             });
-            if (replannedDetour === false) return { exists: true, path: false };
+            if (replannedDetour === false) {
+                return {
+                    exists: true,
+                    path: false,
+                    blockedByAgent: true
+                };
+            }
             activeDetour.currentPosition = currentPosition;
             activeDetour.remainingPath = replannedDetour;
         }
@@ -168,7 +228,9 @@ function findOrdinaryPath(beliefs, target, routeKey) {
     const detour = BFS(beliefs, target, {
         isBlocked: isBlockedForDetour,
     });
-    if (detour === false) return { exists: true, path: false };
+    if (detour === false) {
+        return { exists: true, path: false, blockedByAgent: true };
+    }
 
     activeDetour = {
         routeKey,
@@ -199,10 +261,20 @@ function resultForPath(path, terminal, intention, beliefs) {
         `${intention.type}: move ${dir} to (${path[0].x},${path[0].y}), `
         + `target (${intention.target.x},${intention.target.y}), remaining ${path.length}`
     );
-    return { status: "action", action: { action: "move", dir } };
+    return {
+        status: "action",
+        action: {
+            action: "move",
+            dir,
+            source: "bfs",
+            intentionKey: intentionKey(intention)
+        }
+    };
 }
 
 function createCrateTask(beliefs, intention, key) {
+    resetAgentBlock();
+    resetBfsMoveFailure();
     const finalTarget = { x: intention.target.x, y: intention.target.y };
     const corridor = findCrateCorridor(beliefs, finalTarget);
     activeCrateTask = {
@@ -239,6 +311,8 @@ async function planCratePhase(beliefs) {
     const task = activeCrateTask;
     const mode = task.phase;
     activeDetour = null;
+    resetAgentBlock();
+    resetBfsMoveFailure();
     const planningGoal = mode === "local" ? task.exit : task.finalTarget;
     const result = await planCrateRoute(beliefs, {
         intentionKey: task.intentionKey,
@@ -256,6 +330,8 @@ async function planCratePhase(beliefs) {
     if (result.status === "invalidated") {
         activeCrateTask = null;
         activeDetour = null;
+        resetAgentBlock();
+        resetBfsMoveFailure();
         return { status: "wait", reason: result.reason };
     }
     if (result.status === "completed") {
@@ -282,13 +358,23 @@ async function planCratePhase(beliefs) {
 
 async function navigateThen(terminal, intention, beliefs) {
     const key = intentionKey(intention);
+    if (activeAgentBlock
+        && activeAgentBlock.intentionKey !== key) resetAgentBlock();
+    if (activeBfsMoveFailure
+        && activeBfsMoveFailure.intentionKey !== key) resetBfsMoveFailure();
+
     const ordinary = findOrdinaryPath(beliefs, intention.target, key);
 
     if (ordinary.exists) {
         if (activeCrateTask) {
+            resetAgentBlock();
             console.log("[pddl] ordinary route available: using BFS");
         }
         discardCrateTask("ordinary path available");
+        if (ordinary.blockedByAgent === true) {
+            return handleAgentBlock(beliefs, key);
+        }
+        resetAgentBlock();
         return resultForPath(ordinary.path, terminal, intention, beliefs);
     }
 
@@ -309,13 +395,19 @@ async function navigateThen(terminal, intention, beliefs) {
             `${key}:approach:${positionKey(activeCrateTask.entry)}`
         );
         if (!approach.exists) {
+            resetAgentBlock();
             activeCrateTask.phase = "global";
             console.log("[pddl] local entry unreachable: using global planning");
+        } else if (approach.blockedByAgent === true) {
+            return handleAgentBlock(beliefs, key);
         } else if (approach.path === false) {
+            resetAgentBlock();
             return { status: "wait", reason: "local entry temporarily blocked" };
         } else if (approach.path.length > 0) {
+            resetAgentBlock();
             return resultForPath(approach.path, null, intention, beliefs);
         } else {
+            resetAgentBlock();
             activeCrateTask.phase = "local";
         }
     }
@@ -352,10 +444,57 @@ export async function planNextAction(intention, beliefs) {
     return planner(intention, beliefs);
 }
 
-export function reconcilePlanningOutcome(outcome) {
-    const result = reconcileCratePlanOutcome(outcome);
-    if (result.status === "invalidated") {
+function reconcileBfsMoveOutcome(outcome, beliefs) {
+    const action = outcome?.action;
+    const isBfsMove = action?.action === "move"
+        && action?.source === "bfs";
+
+    if (outcome?.status === "succeeded" && isBfsMove) {
+        resetBfsMoveFailure();
+        return null;
+    }
+
+    const isRejectedBfsMove = outcome?.status === "failed"
+        && isBfsMove
+        && typeof action.intentionKey === "string"
+        && outcome.result === false
+        && outcome.error == null;
+    if (!isRejectedBfsMove) return null;
+
+    if (activeBfsMoveFailure?.intentionKey !== action.intentionKey) {
+        activeBfsMoveFailure = {
+            intentionKey: action.intentionKey,
+            consecutiveFailures: 1
+        };
+        return null;
+    }
+
+    activeBfsMoveFailure.consecutiveFailures += 1;
+    if (activeBfsMoveFailure.consecutiveFailures
+        < MAX_CONSECUTIVE_BFS_MOVE_FAILURES) return null;
+
+    const durationMs = agentBlockDurationMs(beliefs);
+    deferIntention(action.intentionKey, durationMs);
+    console.warn(
+        `[agent] target deferred for ${durationMs} ms: `
+        + "repeated BFS move failures"
+    );
+    resetNavigationState("repeated BFS move failures");
+    return {
+        status: "deferred",
+        reason: "repeated BFS move failures"
+    };
+}
+
+export function reconcilePlanningOutcome(outcome, beliefs) {
+    const crateResult = reconcileCratePlanOutcome(outcome);
+    if (crateResult.status === "invalidated") {
         activeCrateTask = null;
         activeDetour = null;
+        resetAgentBlock();
+        resetBfsMoveFailure();
     }
+
+    const bfsResult = reconcileBfsMoveOutcome(outcome, beliefs);
+    return bfsResult ?? crateResult;
 }

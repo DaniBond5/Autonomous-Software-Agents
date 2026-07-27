@@ -64,7 +64,13 @@ async function runAgentLoop() {
             beliefs.me.pos
         );
         beliefs.crates.reconcileActionOutcome(outcome);
-        reconcilePlanningOutcome(outcome);
+        const reconciliationResult = reconcilePlanningOutcome(
+            outcome,
+            beliefs
+        );
+        if (reconciliationResult?.status === "deferred") {
+            currentIntention = null;
+        }
 
         const actionType = outcome?.action?.action;
         const isTerminalAction = actionType === "pickup"
