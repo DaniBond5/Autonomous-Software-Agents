@@ -18,18 +18,34 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  */
 
 /**
- * Selects the reachable target with the shortest path from a starting position.
- * @param {import("../utils/geometry.js").ShortestPaths | null} search
- * @param {Iterable<Point>} targets
- * @returns {{target: Point, distance: number} | null}
+ * Prefers operational delivery candidates when at least one is available.
  */
-function nearestReachableTarget(search, targets) {
-    let nearest = null;
+function preferOperationalDeliveryCandidates(candidates) {
+    const operational = candidates.filter(candidate =>
+        candidate.delivery.canReachOperationalSpawner === true
+    );
+    return operational.length > 0 ? operational : candidates;
+}
 
-    for (const target of targets) {
-        const targetDistance = distanceFromSearch(search, target);
-        if (targetDistance < (nearest?.distance ?? Infinity)) {
-            nearest = { target, distance: targetDistance };
+/**
+ * Selects the preferred reachable delivery with the shortest path.
+ * @param {import("../utils/geometry.js").ShortestPaths | null} search
+ * @param {Iterable<Point>} deliveries
+ * @returns {{delivery: Point, distance: number} | null}
+ */
+function nearestReachableDelivery(search, deliveries) {
+    const candidates = [];
+    for (const delivery of deliveries) {
+        const distance = distanceFromSearch(search, delivery);
+        if (Number.isFinite(distance)) {
+            candidates.push({ delivery, distance });
+        }
+    }
+
+    let nearest = null;
+    for (const candidate of preferOperationalDeliveryCandidates(candidates)) {
+        if (candidate.distance < (nearest?.distance ?? Infinity)) {
+            nearest = candidate;
         }
     }
 
@@ -108,7 +124,10 @@ export function generateDesires(beliefs) {
         if (!Number.isFinite(distanceToParcel)) continue;
 
         const parcelPaths = shortestPathsFrom(beliefs, parcel);
-        const delivery = nearestReachableTarget(parcelPaths, beliefs.world.deliveries.values());
+        const delivery = nearestReachableDelivery(
+            parcelPaths,
+            beliefs.world.deliveries.values()
+        );
         if (!delivery) continue;
 
         const pickupCost = distanceToParcel + delivery.distance;
@@ -135,19 +154,28 @@ export function generateDesires(beliefs) {
     }
 
     if (beliefs.parcels.carried.size > 0) {
+        const deliveryCandidates = [];
         for (const delivery of beliefs.world.deliveries.values()) {
             const distanceToDelivery = distanceFromSearch(agentPaths, delivery);
             if (!Number.isFinite(distanceToDelivery)) continue;
 
             const utility = deliverUtility(beliefs, distanceToDelivery);
             if (utility > 0) {
-                desires.push({
-                    type: 'go_deliver',
-                    target: { x: delivery.x, y: delivery.y },
-                    utility,
-                    distance: distanceToDelivery,
+                deliveryCandidates.push({
+                    delivery,
+                    desire: {
+                        type: 'go_deliver',
+                        target: { x: delivery.x, y: delivery.y },
+                        utility,
+                        distance: distanceToDelivery,
+                    }
                 });
             }
+        }
+        for (const candidate of preferOperationalDeliveryCandidates(
+            deliveryCandidates
+        )) {
+            desires.push(candidate.desire);
         }
     }
 
@@ -158,6 +186,7 @@ export function generateDesires(beliefs) {
 
         for (const spawner of beliefs.world.spawners.values()) {
             if (beliefs.world.isVisible(spawner)) continue;
+            if (spawner.canReachOperationalDelivery !== true) continue;
 
             const pathDistance = distanceFromSearch(agentPaths, spawner);
             if (!Number.isFinite(pathDistance)) continue;
