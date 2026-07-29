@@ -52,6 +52,15 @@ function intentionKey(intention) {
     return `${intention.type}:${intention.id ?? ''}:${intention.target.x},${intention.target.y}`;
 }
 
+export function isCrateTaskActiveFor(intention) {
+    return Boolean(
+        intention?.type
+        && intention.target
+        && activeCrateTask
+        && activeCrateTask.intentionKey === intentionKey(intention)
+    );
+}
+
 function crateSignature(beliefs) {
     return [...beliefs.crates.known.values()]
         .map(crate => `${encodeURIComponent(crate.id)}:${crate.x},${crate.y}`)
