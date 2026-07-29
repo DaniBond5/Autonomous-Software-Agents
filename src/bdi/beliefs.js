@@ -1,3 +1,8 @@
+import {
+    distanceFromSearch,
+    shortestPathsFrom
+} from "../utils/geometry.js";
+
 const positionKey = ({ x, y }) => `${x},${y}`;
 const isFinitePosition = position =>
     Number.isFinite(position?.x)
@@ -13,6 +18,48 @@ function parseLocalDecayIntervalMs(event) {
         case '1h': return 3600000;
         case 'infinite': return 0;
         default: return 1000;
+    }
+}
+
+function updateOperationalReachability(beliefs) {
+    const spawners = Array.from(beliefs.world.spawners.values());
+    const deliveries = Array.from(beliefs.world.deliveries.values());
+    const spawnerSearches = new Map();
+    const deliverySearches = new Map();
+
+    for (const spawner of spawners) {
+        spawnerSearches.set(
+            spawner,
+            shortestPathsFrom(beliefs, spawner)
+        );
+    }
+    for (const delivery of deliveries) {
+        deliverySearches.set(
+            delivery,
+            shortestPathsFrom(beliefs, delivery)
+        );
+    }
+
+    for (const delivery of deliveries) {
+        delivery.canReachOperationalSpawner = spawners.some(spawner =>
+            Number.isFinite(distanceFromSearch(
+                deliverySearches.get(delivery),
+                spawner
+            ))
+            && Number.isFinite(distanceFromSearch(
+                spawnerSearches.get(spawner),
+                delivery
+            ))
+        );
+    }
+    for (const spawner of spawners) {
+        spawner.canReachOperationalDelivery = deliveries.some(delivery =>
+            delivery.canReachOperationalSpawner === true
+            && Number.isFinite(distanceFromSearch(
+                spawnerSearches.get(spawner),
+                delivery
+            ))
+        );
     }
 }
 
@@ -373,11 +420,11 @@ class World {
 
         /**
          * Stores known spawner tiles and the time each one was last checked.
-         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {lastCheckedAt: number}>}
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {lastCheckedAt: number, canReachOperationalDelivery: boolean}>}
          */
         this.spawners = new Map();
 
-        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>} */
+        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {canReachOperationalSpawner: boolean}>} */
         this.deliveries = new Map();
 
         /**
@@ -437,8 +484,19 @@ class World {
             const tileType = tile.type;
             const key = `${tile.x},${tile.y}`;
             this.tiles.set(key, tile);
-            if (tileType == 1) this.spawners.set(key, { ...tile, lastCheckedAt: mapLoadedAt });
-            if (tileType == 2) this.deliveries.set(key, tile);
+            if (tileType == 1) {
+                this.spawners.set(key, {
+                    ...tile,
+                    lastCheckedAt: mapLoadedAt,
+                    canReachOperationalDelivery: false
+                });
+            }
+            if (tileType == 2) {
+                this.deliveries.set(key, {
+                    ...tile,
+                    canReachOperationalSpawner: false
+                });
+            }
             maxX = Math.max(maxX, tile.x);
             maxY = Math.max(maxY, tile.y);
         }
@@ -538,6 +596,7 @@ class Beliefs {
 
         socket.onMap((reportedWidth, reportedHeight, tileset) => {
             this.world.updateFromMap(reportedWidth, reportedHeight, tileset);
+            updateOperationalReachability(this);
         });
     }
 }
