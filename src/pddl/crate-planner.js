@@ -48,6 +48,9 @@ const domainTextPromise = readFile(
 /** @type {ActiveCratePlan | null} */
 let activePlan = null;
 
+/** @type {Promise<{status:'resolved',plan:*}|{status:'rejected',error:*}> | null} */
+let activeSolvePromise = null;
+
 const directions = [
     { dx: 1, dy: 0 },
     { dx: -1, dy: 0 },
@@ -424,6 +427,12 @@ async function solveWithTimeout(domain, problem) {
         plan => ({ status: "resolved", plan }),
         error => ({ status: "rejected", error })
     );
+    activeSolvePromise = solverResult;
+    solverResult.then(() => {
+        if (activeSolvePromise === solverResult) {
+            activeSolvePromise = null;
+        }
+    });
     const timeout = new Promise(resolve => {
         timeoutId = setTimeout(
             () => resolve({ status: "timeout" }),
@@ -523,6 +532,9 @@ export async function planCrateRoute(beliefs, request) {
 
     const domain = await domainTextPromise;
     if (!domain) return deferredResult("domain unavailable");
+    if (activeSolvePromise) {
+        return deferredResult("solver request still pending");
+    }
 
     const startedAt = Date.now();
     console.log(`[pddl] ${mode} planning started`);

@@ -13,6 +13,7 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'} type
  * @property {Point}  target   - where to move
  * @property {number} utility  - score from the utility functions
+ * @property {number} [distance] - current BFS distance from the agent to the target
  * @property {string} [id]     - parcel id, ONLY for go_pick_up (used for intention revision)
  */
 
@@ -127,6 +128,7 @@ export function generateDesires(beliefs) {
                 type: 'go_pick_up',
                 target: { x: parcel.x, y: parcel.y },
                 utility,
+                distance: distanceToParcel,
                 id: parcel.id
             });
         }
@@ -143,6 +145,7 @@ export function generateDesires(beliefs) {
                     type: 'go_deliver',
                     target: { x: delivery.x, y: delivery.y },
                     utility,
+                    distance: distanceToDelivery,
                 });
             }
         }

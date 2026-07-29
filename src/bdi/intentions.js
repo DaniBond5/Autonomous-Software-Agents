@@ -17,6 +17,17 @@ function selectBestConcreteDesire(desires) {
     return best;
 }
 
+function selectPreemptingPickup(desires, currentDelivery) {
+    let best = null;
+    for (const desire of desires) {
+        if (desire.type !== 'go_pick_up') continue;
+        if (!(desire.utility > currentDelivery.utility
+            && desire.distance < currentDelivery.distance)) continue;
+        if (!best || desire.utility > best.utility) best = desire;
+    }
+    return best;
+}
+
 function sameTarget(first, second) {
     return first.x === second.x && first.y === second.y;
 }
@@ -27,9 +38,15 @@ function sameTarget(first, second) {
  * @param {import("./desires.js").Desire | null} currentIntention
  * @param {import("./beliefs.js").beliefs} beliefs
  * @param {import("./desires.js").Desire[]} desires
+ * @param {boolean} [deliveryCrateCommitmentActive=false]
  * @returns {import("./desires.js").Desire | null}
  */
-export function reviseIntention(currentIntention, beliefs, desires) {
+export function reviseIntention(
+    currentIntention,
+    beliefs,
+    desires,
+    deliveryCrateCommitmentActive = false
+) {
     const me = {
         x: Math.round(beliefs.me.pos.x),
         y: Math.round(beliefs.me.pos.y),
@@ -41,6 +58,15 @@ export function reviseIntention(currentIntention, beliefs, desires) {
         const visibleParcel = beliefs.parcels.visible.get(desire.id);
         return visibleParcel && sameTarget(visibleParcel, me);
     });
+    const currentDelivery = currentIntention?.type === 'go_deliver'
+        ? desires.find(desire =>
+            desire.type === 'go_deliver'
+            && sameTarget(desire.target, currentIntention.target)
+        )
+        : null;
+    if (deliveryCrateCommitmentActive && currentDelivery) {
+        return currentDelivery;
+    }
     if (pickupHere) return pickupHere;
 
     if (currentIntention) {
@@ -60,15 +86,12 @@ export function reviseIntention(currentIntention, beliefs, desires) {
             case 'go_deliver': {
                 if (beliefs.parcels.carried.size === 0) break;
 
-                const currentDelivery = desires.find(desire =>
-                    desire.type === 'go_deliver'
-                    && sameTarget(desire.target, currentIntention.target)
-                );
                 if (currentDelivery) {
-                    const bestConcrete = selectBestConcreteDesire(desires);
-                    return bestConcrete?.utility > currentDelivery.utility
-                        ? bestConcrete
-                        : currentDelivery;
+                    const preemptingPickup = selectPreemptingPickup(
+                        desires,
+                        currentDelivery
+                    );
+                    return preemptingPickup ?? currentDelivery;
                 }
                 break;
             }

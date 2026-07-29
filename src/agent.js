@@ -6,6 +6,7 @@ import { generateDesires } from "./bdi/desires.js";
 import { reviseIntention } from "./bdi/intentions.js";
 import {
     filterPlannableDesires,
+    isCrateTaskActiveFor,
     planNextAction,
     reconcilePlanningOutcome
 } from "./bdi/planning.js";
@@ -31,11 +32,15 @@ async function runAgentLoop() {
             generateDesires(beliefs),
             beliefs
         );
+        const deliveryCrateCommitmentActive =
+            currentIntention?.type === "go_deliver"
+            && isCrateTaskActiveFor(currentIntention);
 
         currentIntention = reviseIntention(
             currentIntention,
             beliefs,
-            desires
+            desires,
+            deliveryCrateCommitmentActive
         );
 
         const planningResult = await planNextAction(
