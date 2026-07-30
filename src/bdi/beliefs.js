@@ -378,6 +378,12 @@ class Agents {
         this.others = new Map();
     }
 
+    /**
+     * Replaces the perceived agents with the latest sensing.
+     * An agent caught mid-move keeps its fractional coordinate: it is exact,
+     * and it is what tells us that two tiles are locked instead of one.
+     * @param {import("@unitn-asa/deliveroo-js-sdk").IOAgent[]} perceivedAgents
+     */
     update(perceivedAgents) {
 
         const seenNow = new Set();
@@ -385,7 +391,6 @@ class Agents {
         for (const a of perceivedAgents) {
             if (a.x == null || a.y == null) continue;
             seenNow.add(a.id);
-            if (a.x % 1 != 0 || a.y % 1 != 0) continue;
             this.others.set(a.id, a);
         }
 
@@ -398,16 +403,32 @@ class Agents {
 
     /**
      * Returns whether another agent occupies the given tile.
+     * The server locks both the starting and the ending tile of a move, and it
+     * reports the mover on a fractional coordinate in between, so both tiles
+     * count as taken. For an agent standing still floor and ceil are the same
+     * value and this is the plain equality check.
      * @param {{x: number, y: number}} position
      * @returns {boolean}
      */
     isOccupied(position) {
         for (const agent of this.others.values()) {
-            if (agent.x === position.x && agent.y === position.y) return true;
+            if (position.x >= Math.floor(agent.x)
+                && position.x <= Math.ceil(agent.x)
+                && position.y >= Math.floor(agent.y)
+                && position.y <= Math.ceil(agent.y)) return true;
         }
         return false;
     }
 }
+
+// Fallback until the server sends its own movement duration. Only affects how
+// long the agent waits before giving up on a blocked tile, and for how long.
+const DEFAULT_MOVEMENT_DURATION_MS = 1000;
+
+// A blocked tile is granted the time of two moves: long enough for a neighbour
+// that is only passing through, short enough not to stall behind one that
+// stopped there.
+const BLOCKING_AGENT_WAIT_MOVES = 2;
 
 /**
  * Stores map data, game configuration and observation metadata used by the agent.
@@ -567,6 +588,19 @@ class World {
     decayPerMove() {
         if (this.localDecayIntervalMs <= 0) return 0;
         return this.movementDuration / this.localDecayIntervalMs;
+    }
+
+    /**
+     * How long to wait for another agent to clear a tile, in milliseconds.
+     * Counted in movements so the wait scales with the speed of the game.
+     * @returns {number} the wait in milliseconds
+     */
+    blockingAgentWaitMs() {
+        const movementDuration = Number.isFinite(this.movementDuration)
+            && this.movementDuration > 0
+            ? this.movementDuration
+            : DEFAULT_MOVEMENT_DURATION_MS;
+        return movementDuration * BLOCKING_AGENT_WAIT_MOVES;
     }
 }
 
