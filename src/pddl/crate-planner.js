@@ -45,12 +45,6 @@ const domainTextPromise = readFile(
  * @property {number | null} blockedSince
  */
 
-/** @type {ActiveCratePlan | null} */
-let activePlan = null;
-
-/** @type {Promise<{status:'resolved',plan:*}|{status:'rejected',error:*}> | null} */
-let activeSolvePromise = null;
-
 const directions = [
     { dx: 1, dy: 0 },
     { dx: -1, dy: 0 },
@@ -421,29 +415,6 @@ function deferredResult(reason) {
     };
 }
 
-async function solveWithTimeout(domain, problem) {
-    let timeoutId;
-    const solverResult = onlineSolver(domain, problem).then(
-        plan => ({ status: "resolved", plan }),
-        error => ({ status: "rejected", error })
-    );
-    activeSolvePromise = solverResult;
-    solverResult.then(() => {
-        if (activeSolvePromise === solverResult) {
-            activeSolvePromise = null;
-        }
-    });
-    const timeout = new Promise(resolve => {
-        timeoutId = setTimeout(
-            () => resolve({ status: "timeout" }),
-            config.pddl.timeoutMs
-        );
-    });
-    const result = await Promise.race([solverResult, timeout]);
-    clearTimeout(timeoutId);
-    return result;
-}
-
 function blockingAgentTimeoutMs(beliefs) {
     const configuredDuration = beliefs?.world?.movementDuration;
     const movementDuration = Number.isFinite(configuredDuration)
@@ -453,166 +424,204 @@ function blockingAgentTimeoutMs(beliefs) {
     return movementDuration * BLOCKING_AGENT_WAIT_MOVES;
 }
 
-function nextActiveAction(beliefs) {
-    if (activePlan.pendingAction) {
-        return { status: "wait", reason: "action outcome pending" };
-    }
-    if (activePlan.nextIndex >= activePlan.actions.length) {
-        activePlan = null;
-        return { status: "completed" };
-    }
-
-    const action = activePlan.actions[activePlan.nextIndex];
-    const validation = validateNextAction(action, beliefs);
-    if (validation === "agent-blocked") {
-        const now = Date.now();
-        if (activePlan.blockedSince == null) {
-            activePlan.blockedSince = now;
-            console.log("[pddl] waiting for blocking agent");
-        }
-        if (now - activePlan.blockedSince < blockingAgentTimeoutMs(beliefs)) {
-            return { status: "wait", reason: "blocking agent" };
-        }
-
-        console.warn("[pddl] blocking agent wait expired");
-        invalidateCratePlan("blocking agent timeout");
-        return deferredResult("blocking agent timeout");
-    }
-    activePlan.blockedSince = null;
-    if (validation !== "valid") {
-        invalidateCratePlan("next action is no longer applicable");
-        return {
-            status: "invalidated",
-            reason: "next action is no longer applicable",
-        };
-    }
-
-    activePlan.pendingAction = action;
-    if (action.kind === "push") {
-        console.log(`[pddl] push ready: crate ${action.crateId}`);
-    }
-    return { status: "action", action };
-}
-
 /**
- * Returns one explicit result for a local or global crate route.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs
- * @param {{intentionKey:string,finalTarget:{x:number,y:number},planningGoal:{x:number,y:number},mode:'local'|'global'}} request
- * @returns {Promise<{status:'action',action:PddlMoveAction}|{status:'completed'}|{status:'wait',reason:string}|{status:'no-plan'}|{status:'deferred',reason:string,retryAfterMs:number}|{status:'invalidated',reason:string}>}
+ * Solves and runs the crate routes of one agent. The plan being executed and
+ * the pending solver request belong to that agent, so each one owns an
+ * instance. The domain text stays shared: it is immutable data, not state.
  */
-export async function planCrateRoute(beliefs, request) {
-    const { intentionKey, finalTarget, planningGoal, mode } = request ?? {};
-    if (
-        !validPosition(beliefs?.me?.pos)
-        || !validPosition(finalTarget)
-        || !validPosition(planningGoal)
-        || (mode !== "local" && mode !== "global")
-        || typeof intentionKey !== "string"
-        || !(beliefs?.crates?.known instanceof Map)
-    ) {
-        return deferredResult("invalid planning input");
+export class CratePlanner {
+    constructor() {
+        /** @type {ActiveCratePlan | null} */
+        this.activePlan = null;
+
+        /** @type {Promise<{status:'resolved',plan:*}|{status:'rejected',error:*}> | null} */
+        this.activeSolvePromise = null;
     }
 
-    const requestChanged = activePlan !== null
-        && (
-            activePlan.intentionKey !== intentionKey
-            || activePlan.mode !== mode
-            || !samePosition(activePlan.finalTarget, finalTarget)
-            || !samePosition(activePlan.planningGoal, planningGoal)
+    async solveWithTimeout(domain, problem) {
+        let timeoutId;
+        const solverResult = onlineSolver(domain, problem).then(
+            plan => ({ status: "resolved", plan }),
+            error => ({ status: "rejected", error })
         );
-    if (requestChanged) {
-        invalidateCratePlan("planning request changed");
+        this.activeSolvePromise = solverResult;
+        solverResult.then(() => {
+            if (this.activeSolvePromise === solverResult) {
+                this.activeSolvePromise = null;
+            }
+        });
+        const timeout = new Promise(resolve => {
+            timeoutId = setTimeout(
+                () => resolve({ status: "timeout" }),
+                config.pddl.timeoutMs
+            );
+        });
+        const result = await Promise.race([solverResult, timeout]);
+        clearTimeout(timeoutId);
+        return result;
     }
 
-    if (activePlan) return nextActiveAction(beliefs);
+    nextActiveAction(beliefs) {
+        if (this.activePlan.pendingAction) {
+            return { status: "wait", reason: "action outcome pending" };
+        }
+        if (this.activePlan.nextIndex >= this.activePlan.actions.length) {
+            this.activePlan = null;
+            return { status: "completed" };
+        }
 
-    const problemKey = buildProblemKey(beliefs, request);
-    const snapshot = buildProblem(beliefs, planningGoal);
-    if (snapshot.error) return deferredResult(snapshot.error);
+        const action = this.activePlan.actions[this.activePlan.nextIndex];
+        const validation = validateNextAction(action, beliefs);
+        if (validation === "agent-blocked") {
+            const now = Date.now();
+            if (this.activePlan.blockedSince == null) {
+                this.activePlan.blockedSince = now;
+                console.log("[pddl] waiting for blocking agent");
+            }
+            if (now - this.activePlan.blockedSince < blockingAgentTimeoutMs(beliefs)) {
+                return { status: "wait", reason: "blocking agent" };
+            }
 
-    const domain = await domainTextPromise;
-    if (!domain) return deferredResult("domain unavailable");
-    if (activeSolvePromise) {
-        return deferredResult("solver request still pending");
+            console.warn("[pddl] blocking agent wait expired");
+            this.invalidateCratePlan("blocking agent timeout");
+            return deferredResult("blocking agent timeout");
+        }
+        this.activePlan.blockedSince = null;
+        if (validation !== "valid") {
+            this.invalidateCratePlan("next action is no longer applicable");
+            return {
+                status: "invalidated",
+                reason: "next action is no longer applicable",
+            };
+        }
+
+        this.activePlan.pendingAction = action;
+        if (action.kind === "push") {
+            console.log(`[pddl] push ready: crate ${action.crateId}`);
+        }
+        return { status: "action", action };
     }
 
-    const startedAt = Date.now();
-    console.log(`[pddl] ${mode} planning started`);
-    const solverResult = await solveWithTimeout(domain, snapshot.problem);
+    /**
+     * Returns one explicit result for a local or global crate route.
+     * @param {import("../bdi/beliefs.js").Beliefs} beliefs
+     * @param {{intentionKey:string,finalTarget:{x:number,y:number},planningGoal:{x:number,y:number},mode:'local'|'global'}} request
+     * @returns {Promise<{status:'action',action:PddlMoveAction}|{status:'completed'}|{status:'wait',reason:string}|{status:'no-plan'}|{status:'deferred',reason:string,retryAfterMs:number}|{status:'invalidated',reason:string}>}
+     */
+    async planCrateRoute(beliefs, request) {
+        const { intentionKey, finalTarget, planningGoal, mode } = request ?? {};
+        if (
+            !validPosition(beliefs?.me?.pos)
+            || !validPosition(finalTarget)
+            || !validPosition(planningGoal)
+            || (mode !== "local" && mode !== "global")
+            || typeof intentionKey !== "string"
+            || !(beliefs?.crates?.known instanceof Map)
+        ) {
+            return deferredResult("invalid planning input");
+        }
 
-    if (solverResult.status === "timeout") {
-        return deferredResult(
-            `solve timed out after ${config.pddl.timeoutMs} ms`
+        const requestChanged = this.activePlan !== null
+            && (
+                this.activePlan.intentionKey !== intentionKey
+                || this.activePlan.mode !== mode
+                || !samePosition(this.activePlan.finalTarget, finalTarget)
+                || !samePosition(this.activePlan.planningGoal, planningGoal)
+            );
+        if (requestChanged) {
+            this.invalidateCratePlan("planning request changed");
+        }
+
+        if (this.activePlan) return this.nextActiveAction(beliefs);
+
+        const problemKey = buildProblemKey(beliefs, request);
+        const snapshot = buildProblem(beliefs, planningGoal);
+        if (snapshot.error) return deferredResult(snapshot.error);
+
+        const domain = await domainTextPromise;
+        if (!domain) return deferredResult("domain unavailable");
+        if (this.activeSolvePromise) {
+            return deferredResult("solver request still pending");
+        }
+
+        const startedAt = Date.now();
+        console.log(`[pddl] ${mode} planning started`);
+        const solverResult = await this.solveWithTimeout(domain, snapshot.problem);
+
+        if (solverResult.status === "timeout") {
+            return deferredResult(
+                `solve timed out after ${config.pddl.timeoutMs} ms`
+            );
+        }
+        if (solverResult.status === "rejected") {
+            const errorMessage = solverResult.error instanceof Error
+                ? solverResult.error.message
+                : String(solverResult.error ?? "unknown error");
+            return deferredResult(
+                `solver error: ${errorMessage}`
+            );
+        }
+
+        const currentProblemKey = buildProblemKey(beliefs, request);
+        if (currentProblemKey !== problemKey) {
+            console.warn("[pddl] plan invalidated: state changed during solve");
+            return { status: "invalidated", reason: "state changed during solve" };
+        }
+
+        if (solverResult.plan == null) {
+            console.warn("[pddl] no plan found");
+            return { status: "no-plan" };
+        }
+
+        const normalized = normalizePlan(solverResult.plan, snapshot, planningGoal);
+        if (normalized.error) {
+            const reason = `malformed plan: ${normalized.error}`;
+            return deferredResult(reason);
+        }
+
+        this.activePlan = {
+            intentionKey,
+            finalTarget: { x: finalTarget.x, y: finalTarget.y },
+            planningGoal: { x: planningGoal.x, y: planningGoal.y },
+            mode,
+            actions: normalized.actions,
+            nextIndex: 0,
+            pendingAction: null,
+            blockedSince: null,
+        };
+        console.log(
+            `[pddl] plan ready: ${normalized.actions.length} actions in `
+            + `${Date.now() - startedAt} ms`
         );
-    }
-    if (solverResult.status === "rejected") {
-        const errorMessage = solverResult.error instanceof Error
-            ? solverResult.error.message
-            : String(solverResult.error ?? "unknown error");
-        return deferredResult(
-            `solver error: ${errorMessage}`
-        );
+
+        return this.nextActiveAction(beliefs);
     }
 
-    const currentProblemKey = buildProblemKey(beliefs, request);
-    if (currentProblemKey !== problemKey) {
-        console.warn("[pddl] plan invalidated: state changed during solve");
-        return { status: "invalidated", reason: "state changed during solve" };
-    }
+    /** Advances or invalidates the active plan after its pending action outcome. */
+    reconcileCratePlanOutcome(outcome) {
+        const action = outcome?.action;
+        if (action?.source !== "pddl" || !this.activePlan?.pendingAction) {
+            return { status: "ignored" };
+        }
+        if (action !== this.activePlan.pendingAction) return { status: "ignored" };
 
-    if (solverResult.plan == null) {
-        console.warn("[pddl] no plan found");
-        return { status: "no-plan" };
-    }
+        if (outcome.status === "succeeded") {
+            this.activePlan.nextIndex += 1;
+            this.activePlan.pendingAction = null;
+            this.activePlan.blockedSince = null;
+            return { status: "advanced" };
+        }
+        if (outcome.status === "failed") {
+            this.invalidateCratePlan("PDDL action failed");
+            return { status: "invalidated", reason: "PDDL action failed" };
+        }
 
-    const normalized = normalizePlan(solverResult.plan, snapshot, planningGoal);
-    if (normalized.error) {
-        const reason = `malformed plan: ${normalized.error}`;
-        return deferredResult(reason);
-    }
-
-    activePlan = {
-        intentionKey,
-        finalTarget: { x: finalTarget.x, y: finalTarget.y },
-        planningGoal: { x: planningGoal.x, y: planningGoal.y },
-        mode,
-        actions: normalized.actions,
-        nextIndex: 0,
-        pendingAction: null,
-        blockedSince: null,
-    };
-    console.log(
-        `[pddl] plan ready: ${normalized.actions.length} actions in `
-        + `${Date.now() - startedAt} ms`
-    );
-
-    return nextActiveAction(beliefs);
-}
-
-/** Advances or invalidates the active plan after its pending action outcome. */
-export function reconcileCratePlanOutcome(outcome) {
-    const action = outcome?.action;
-    if (action?.source !== "pddl" || !activePlan?.pendingAction) {
         return { status: "ignored" };
     }
-    if (action !== activePlan.pendingAction) return { status: "ignored" };
 
-    if (outcome.status === "succeeded") {
-        activePlan.nextIndex += 1;
-        activePlan.pendingAction = null;
-        activePlan.blockedSince = null;
-        return { status: "advanced" };
+    invalidateCratePlan(reason) {
+        const hadActivePlan = this.activePlan != null;
+        this.activePlan = null;
+        if (hadActivePlan) console.warn(`[pddl] plan invalidated: ${reason}`);
     }
-    if (outcome.status === "failed") {
-        invalidateCratePlan("PDDL action failed");
-        return { status: "invalidated", reason: "PDDL action failed" };
-    }
-
-    return { status: "ignored" };
-}
-
-export function invalidateCratePlan(reason) {
-    const hadActivePlan = activePlan != null;
-    activePlan = null;
-    if (hadActivePlan) console.warn(`[pddl] plan invalidated: ${reason}`);
 }

@@ -18,6 +18,16 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  */
 
 /**
+ * Builds the identity of a desire. Desire objects are rebuilt from scratch on
+ * every cycle, so a goal can only be recognised across cycles through this key.
+ * @param {Desire} desire
+ * @returns {string} the desire identity
+ */
+export function desireKey(desire) {
+    return `${desire.type}:${desire.id ?? ''}:${desire.target.x},${desire.target.y}`;
+}
+
+/**
  * Prefers operational delivery candidates when at least one is available.
  */
 function preferOperationalDeliveryCandidates(candidates) {
@@ -54,7 +64,7 @@ function nearestReachableDelivery(search, deliveries) {
 
 /**
  * Computes the total reward that carried parcels are expected to retain at delivery.
- * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
  * @returns {number} the expected carried reward at delivery
  */
@@ -74,7 +84,7 @@ function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
 
 /**
  * Computes the utility of picking up the given parcel.
- * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} pickupCost
  * @param {number} expectedNewParcelReward
  * @returns {number} the path-efficiency utility for picking up the parcel.
@@ -88,7 +98,7 @@ function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward) {
 
 /**
  * Computes the utility of delivering the carried parcels.
- * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
  * @returns {number} the path-efficiency utility for delivering.
  */
@@ -111,7 +121,7 @@ function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
 /**
  * Generates the current set of desires as plain objects, given the beliefs.
  * Desires are ephemeral data, regenerated every cycle.
- * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {import("./beliefs.js").Beliefs} beliefs
  * @returns {Desire[]} the generated desires.
  */
 export function generateDesires(beliefs) {
