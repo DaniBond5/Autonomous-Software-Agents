@@ -28,7 +28,7 @@ const positionKey = ({ x, y }) => `${x},${y}`;
 
 /**
  * Computes shortest paths from one position to every reachable tile.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @param {{x: number, y: number}} start
  * @param {PathfindingOptions} [options]
  * @returns {ShortestPaths | null}
@@ -94,7 +94,7 @@ function pathFromSearch(search, target) {
 
 /**
  * Performs a Breadth First Search from an optional starting position to a goal.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} goalTile
  * @param {PathfindingOptions & {startingPosition?: {x: number, y: number}}} [options]
  * @returns {false | {x: number, y: number}[]} false if unreachable, otherwise the path (empty at the goal)
@@ -140,7 +140,7 @@ export function BFS(beliefs, goalTile, options = {}) {
 
 /**
  * A tile is traversable when it exists and is not a wall.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @param {{x: number, y: number}} position
  * @returns {boolean}
  */
@@ -151,7 +151,7 @@ export function isPositionTraversable(beliefs, {x: positionX, y: positionY}) {
 
 /**
  * Checks whether a move follows map adjacency, traversability and destination direction.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @param {{x: number, y: number}} from
  * @param {{x: number, y: number}} to
  * @returns {boolean}
@@ -209,7 +209,7 @@ export function isPushTransitionAllowed(
 /**
  * Finds a directed corridor whose crate crossings have a valid initial push.
  * It selects entry/exit for PDDL without simulating subsequent crate states.
- * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @param {{x: number, y: number}} goalTile
  * @returns {false | {entry:{x:number,y:number},exit:{x:number,y:number}}}
  */
@@ -288,7 +288,7 @@ function crateCorridorFromPath(beliefs, start, path) {
 }
 
 /**
- * @param {import("../bdi/beliefs.js").beliefs} beliefs
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @param {{x: number, y: number}} position
  * @param {PathfindingOptions} [options]
  * @returns {{x: number, y: number}[]}

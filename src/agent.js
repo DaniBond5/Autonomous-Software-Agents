@@ -1,15 +1,10 @@
 import { DjsConnect } from "@unitn-asa/deliveroo-js-sdk";
 
 import config from "./config.js";
-import { beliefs } from "./bdi/beliefs.js";
-import { generateDesires } from "./bdi/desires.js";
+import { Beliefs } from "./bdi/beliefs.js";
+import { desireKey, generateDesires } from "./bdi/desires.js";
 import { reviseIntention } from "./bdi/intentions.js";
-import {
-    filterPlannableDesires,
-    isCrateTaskActiveFor,
-    planNextAction,
-    reconcilePlanningOutcome
-} from "./bdi/planning.js";
+import { Planner } from "./bdi/planning.js";
 import { executeAction } from "./bdi/execution.js";
 
 const socket = DjsConnect(
@@ -19,31 +14,58 @@ const socket = DjsConnect(
 
 const IDLE_WAIT_MS = 200;
 
+const dbg = (...args) => {
+    if (config.debug) console.log("[agent]", ...args);
+};
+
 const wait = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
-async function runAgentLoop() {
+/**
+ * Runs the BDI control loop of one agent.
+ * @param {Beliefs} beliefs
+ * @param {Planner} planner
+ * @param {object} socket
+ */
+async function runAgentLoop(beliefs, planner, socket) {
     let currentIntention = null;
 
     console.log("[agent] loop started");
 
     while (true) {
-        const desires = filterPlannableDesires(
+        const desires = planner.filterPlannableDesires(
             generateDesires(beliefs),
             beliefs
         );
         const deliveryCrateCommitmentActive =
             currentIntention?.type === "go_deliver"
-            && isCrateTaskActiveFor(currentIntention);
+            && planner.isCrateTaskActiveFor(currentIntention);
 
+        const previousIntention = currentIntention;
         currentIntention = reviseIntention(
             currentIntention,
             beliefs,
             desires,
             deliveryCrateCommitmentActive
         );
+        // One line per goal change, so the log tells apart a goal that was
+        // outranked from one that left the desire set. The old utility comes
+        // from the current desires: a value computed cycles ago is not
+        // comparable with a fresh one, so a goal that is gone says so.
+        if (previousIntention && currentIntention
+            && desireKey(previousIntention) !== desireKey(currentIntention)) {
+            const left = desires.find(
+                desire => desireKey(desire) === desireKey(previousIntention)
+            );
+            dbg(
+                `intention changed: left ${desireKey(previousIntention)} `
+                + `(utility ${left ? left.utility.toFixed(2) : "gone"}), `
+                + `took ${desireKey(currentIntention)} `
+                + `(utility ${currentIntention.utility.toFixed(2)})`
+            );
+        }
 
-        const planningResult = await planNextAction(
+        const planningResult = await planner.planNextAction(
             currentIntention,
             beliefs
         );
@@ -69,7 +91,7 @@ async function runAgentLoop() {
             beliefs.me.pos
         );
         beliefs.crates.reconcileActionOutcome(outcome);
-        const reconciliationResult = reconcilePlanningOutcome(
+        const reconciliationResult = planner.reconcilePlanningOutcome(
             outcome,
             beliefs
         );
@@ -92,8 +114,13 @@ async function runAgentLoop() {
 }
 
 async function main() {
+    // Beliefs and planning state belong to one agent. Building them here is
+    // what lets a second agent run in the same process without interference.
+    const beliefs = new Beliefs();
+    const planner = new Planner();
+
     beliefs.init(socket);
-    await runAgentLoop();
+    await runAgentLoop(beliefs, planner, socket);
 }
 
 main().catch((error) => {

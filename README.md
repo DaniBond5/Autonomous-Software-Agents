@@ -87,9 +87,9 @@ The server must be started separately by following the instructions in the [Deli
 
 ## PDDL Solver
 
-The agent uses the online solver provided by `@unitn-asa/pddl-client` when movable crates block an ordinary BFS route.
+When movable crates block an ordinary BFS route, the agent calls `onlineSolver` from `@unitn-asa/pddl-client`. The domain and the generated problem are sent over the network and the plan comes back from that remote service, so no planner has to be installed on the machine running the agent, but internet access is required.
 
-No local planner installation is required.
+In the code and in the log messages, `local` and `global` describe the scope of the problem handed to that same remote solver, not where it runs: `local` covers only the crate corridor between an entry and an exit tile, `global` covers the whole map.
 
 The PDDL domain is stored in:
 

@@ -275,6 +275,23 @@ class Crates {
     constructor() {
         /** @type {Map<string, {id: string, x: number, y: number}>} */
         this.known = new Map();
+
+        /**
+         * Position view of `known`, which stays the source of truth.
+         * getAt runs inside the neighbour expansion of the corridor search,
+         * once per visited tile, where scanning every crate would be costly.
+         * @type {Map<string, {id: string, x: number, y: number}>}
+         */
+        this.byPosition = new Map();
+    }
+
+    /** Rebuilds the position view. Crates are few, so a full rebuild is
+     * simpler than keeping the two views in step by hand. */
+    reindexByPosition() {
+        this.byPosition.clear();
+        for (const crate of this.known.values()) {
+            this.byPosition.set(positionKey(crate), crate);
+        }
     }
 
     update(perceivedCrates, isVisible) {
@@ -302,6 +319,8 @@ class Crates {
                 this.known.delete(id);
             }
         }
+
+        this.reindexByPosition();
     }
 
     isOccupied(position) {
@@ -310,13 +329,7 @@ class Crates {
 
     /** Returns the crate occupying a position, or null when it is free. */
     getAt(position) {
-        for (const crate of this.known.values()) {
-            if (crate.x === position.x && crate.y === position.y) {
-                return crate;
-            }
-        }
-
-        return null;
+        return this.byPosition.get(positionKey(position)) ?? null;
     }
 
     /** Reconciles a successful PDDL push with the remembered crate position. */
@@ -350,6 +363,7 @@ class Crates {
             x: crateTo.x,
             y: crateTo.y
         });
+        this.reindexByPosition();
     }
 }
 
@@ -559,8 +573,10 @@ class World {
 /**
  * Aggregator that owns the belief components and wires them to the socket.
  * It only coordinates and delegates, it contains no domain logic.
+ * One instance per agent, built by agent.js, so two agents in the same
+ * process cannot overwrite each other's beliefs.
  */
-class Beliefs {
+export class Beliefs {
     constructor() {
         this.me = new Me();
         this.parcels = new Parcels();
@@ -600,5 +616,3 @@ class Beliefs {
         });
     }
 }
-
-export const beliefs = new Beliefs();

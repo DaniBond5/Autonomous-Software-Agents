@@ -21,7 +21,7 @@ function sdkFailure(action, error) {
 /**
  * Movement and self-position synchronization remain one operation.
  * @param {import("./planning.js").Action | null} action
- * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {object} socket
  * @returns {Promise<ActionOutcome>}
  */

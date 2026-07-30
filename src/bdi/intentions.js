@@ -36,7 +36,7 @@ function sameTarget(first, second) {
  * Keeps the current intention while its goal is still valid, otherwise
  * replaces it with the currently most useful desire.
  * @param {import("./desires.js").Desire | null} currentIntention
- * @param {import("./beliefs.js").beliefs} beliefs
+ * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {import("./desires.js").Desire[]} desires
  * @param {boolean} [deliveryCrateCommitmentActive=false]
  * @returns {import("./desires.js").Desire | null}
