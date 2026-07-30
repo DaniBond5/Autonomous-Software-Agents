@@ -190,7 +190,13 @@ export function generateDesires(beliefs) {
     }
 
     const hasPickupDesire = desires.some(desire => desire.type === 'go_pick_up');
-    if (!hasPickupDesire && beliefs.parcels.carried.size === 0) {
+    // Explore when there is nothing better to do. The carried check normally
+    // keeps the agent from wandering off with parcels in hand, but it is lifted
+    // when the set would otherwise be empty: with no desire at all the intention
+    // stays null and the agent stops for good, and moving is the only thing that
+    // changes which tiles are reachable on a one-way map.
+    if (!hasPickupDesire
+        && (beliefs.parcels.carried.size === 0 || desires.length === 0)) {
         const now = Date.now();
         const movementDuration = Math.max(1, beliefs.world.movementDuration);
 
