@@ -22,8 +22,9 @@ const roundPos = position => ({
 const positionKey = ({ x, y }) => `${x},${y}`;
 const samePosition = (a, b) => a.x === b.x && a.y === b.y;
 
-const DEFAULT_MOVEMENT_DURATION_MS = 1000;
-const BLOCKING_AGENT_WAIT_MOVES = 2;
+// Two rejections in a row mean the route is really taken, not that we were
+// unlucky once. Raising it makes the agent keep pushing into a blocked tile,
+// lowering it makes it abandon goals after a single mishap.
 const MAX_CONSECUTIVE_BFS_MOVE_FAILURES = 2;
 
 function crateSignature(beliefs) {
@@ -31,15 +32,6 @@ function crateSignature(beliefs) {
         .map(crate => `${encodeURIComponent(crate.id)}:${crate.x},${crate.y}`)
         .sort()
         .join(";");
-}
-
-function agentBlockDurationMs(beliefs) {
-    const configuredDuration = beliefs.world.movementDuration;
-    const movementDuration = Number.isFinite(configuredDuration)
-        && configuredDuration > 0
-        ? configuredDuration
-        : DEFAULT_MOVEMENT_DURATION_MS;
-    return movementDuration * BLOCKING_AGENT_WAIT_MOVES;
 }
 
 function stepDir(from, to) {
@@ -198,7 +190,7 @@ export class Planner {
             return { status: "wait", reason: "ordinary route temporarily blocked" };
         }
 
-        const durationMs = agentBlockDurationMs(beliefs);
+        const durationMs = beliefs.world.blockingAgentWaitMs();
         if (now - this.activeAgentBlock.blockedSince < durationMs) {
             return { status: "wait", reason: "ordinary route temporarily blocked" };
         }
@@ -488,7 +480,7 @@ export class Planner {
         if (this.activeBfsMoveFailure.consecutiveFailures
             < MAX_CONSECUTIVE_BFS_MOVE_FAILURES) return null;
 
-        const durationMs = agentBlockDurationMs(beliefs);
+        const durationMs = beliefs.world.blockingAgentWaitMs();
         this.deferIntention(action.intentionKey, durationMs);
         console.warn(
             `[agent] target deferred for ${durationMs} ms: `

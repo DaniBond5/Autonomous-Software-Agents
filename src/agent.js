@@ -12,6 +12,9 @@ const socket = DjsConnect(
     config.deliveroo.agents.bdi.token
 );
 
+// Breather after a cycle that produced no successful action, so a blocked or
+// idle agent does not spin against the server. Longer makes it slow to react,
+// shorter just burns cycles re-planning an unchanged world.
 const IDLE_WAIT_MS = 200;
 
 const dbg = (...args) => {

@@ -9,8 +9,6 @@ import {
 } from "../utils/geometry.js";
 
 const DOMAIN_NAME = "deliveroo-crates";
-const DEFAULT_MOVEMENT_DURATION_MS = 1000;
-const BLOCKING_AGENT_WAIT_MOVES = 2;
 
 const domainTextPromise = readFile(
     new URL("./crates-domain.pddl", import.meta.url),
@@ -415,15 +413,6 @@ function deferredResult(reason) {
     };
 }
 
-function blockingAgentTimeoutMs(beliefs) {
-    const configuredDuration = beliefs?.world?.movementDuration;
-    const movementDuration = Number.isFinite(configuredDuration)
-        && configuredDuration > 0
-        ? configuredDuration
-        : DEFAULT_MOVEMENT_DURATION_MS;
-    return movementDuration * BLOCKING_AGENT_WAIT_MOVES;
-}
-
 /**
  * Solves and runs the crate routes of one agent. The plan being executed and
  * the pending solver request belong to that agent, so each one owns an
@@ -478,7 +467,7 @@ export class CratePlanner {
                 this.activePlan.blockedSince = now;
                 console.log("[pddl] waiting for blocking agent");
             }
-            if (now - this.activePlan.blockedSince < blockingAgentTimeoutMs(beliefs)) {
+            if (now - this.activePlan.blockedSince < beliefs.world.blockingAgentWaitMs()) {
                 return { status: "wait", reason: "blocking agent" };
             }
 
