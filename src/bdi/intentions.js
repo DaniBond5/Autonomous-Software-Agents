@@ -1,3 +1,5 @@
+import { desireKey } from "./desires.js";
+
 function selectBestDesire(desires) {
     if (desires.length === 0) return null;
 
@@ -8,28 +10,29 @@ function selectBestDesire(desires) {
     return best;
 }
 
-function selectBestConcreteDesire(desires) {
-    let best = null;
-    for (const desire of desires) {
-        if (desire.type !== 'go_pick_up' && desire.type !== 'go_deliver') continue;
-        if (!best || desire.utility > best.utility) best = desire;
-    }
-    return best;
-}
-
-function selectPreemptingPickup(desires, currentDelivery) {
-    let best = null;
-    for (const desire of desires) {
-        if (desire.type !== 'go_pick_up') continue;
-        if (!(desire.utility > currentDelivery.utility
-            && desire.distance < currentDelivery.distance)) continue;
-        if (!best || desire.utility > best.utility) best = desire;
-    }
-    return best;
-}
-
 function sameTarget(first, second) {
     return first.x === second.x && first.y === second.y;
+}
+
+/**
+ * Whether a challenger is worth abandoning the current goal for.
+ * The strict comparison also excludes the current goal itself, which is one of
+ * the candidates.
+ * @param {import("./desires.js").Desire} challenger
+ * @param {import("./desires.js").Desire} active
+ * @returns {boolean}
+ */
+function outranks(challenger, active) {
+    if (challenger.utility <= active.utility) return false;
+
+    // A delivery under way is only given up for a pickup that is also closer.
+    // A detour that is merely worth more still costs us the parcels we are
+    // carrying, whose reward keeps decaying while we walk.
+    if (active.type === 'go_deliver') {
+        return challenger.type === 'go_pick_up'
+            && challenger.distance < active.distance;
+    }
+    return true;
 }
 
 /**
@@ -58,60 +61,33 @@ export function reviseIntention(
         const visibleParcel = beliefs.parcels.visible.get(desire.id);
         return visibleParcel && sameTarget(visibleParcel, me);
     });
-    const currentDelivery = currentIntention?.type === 'go_deliver'
-        ? desires.find(desire =>
-            desire.type === 'go_deliver'
-            && sameTarget(desire.target, currentIntention.target)
-        )
+    const active = currentIntention
+        ? desires.find(desire => desireKey(desire) === desireKey(currentIntention))
         : null;
-    if (deliveryCrateCommitmentActive && currentDelivery) {
-        return currentDelivery;
-    }
+
+    // 1. A crate plan is already being executed: do not touch the intention.
+    if (deliveryCrateCommitmentActive && active) return active;
+
+    // 2. A parcel is on the tile we already stand on: taking it costs no move.
     if (pickupHere) return pickupHere;
 
-    if (currentIntention) {
-        switch (currentIntention.type) {
-            case 'go_pick_up': {
-                const currentPickup = desires.find(desire =>
-                    desire.type === 'go_pick_up' && desire.id === currentIntention.id
-                );
-                if (currentPickup) {
-                    const bestConcrete = selectBestConcreteDesire(desires);
-                    return bestConcrete?.utility > currentPickup.utility
-                        ? bestConcrete
-                        : currentPickup;
-                }
-                break;
-            }
-            case 'go_deliver': {
-                if (beliefs.parcels.carried.size === 0) break;
+    // 3. The current goal is no longer supported by any desire.
+    if (!active) return selectBestDesire(desires);
 
-                if (currentDelivery) {
-                    const preemptingPickup = selectPreemptingPickup(
-                        desires,
-                        currentDelivery
-                    );
-                    return preemptingPickup ?? currentDelivery;
-                }
-                break;
-            }
-            case 'go_to_spawner': {
-                const currentSpawner = desires.find(desire =>
-                    desire.type === 'go_to_spawner'
-                    && sameTarget(desire.target, currentIntention.target)
-                );
-                const targetVisible = beliefs.world.isVisible(currentIntention.target);
-                const pickupAvailable = desires.some(desire => desire.type === 'go_pick_up');
-                if (currentSpawner
-                    && !targetVisible
-                    && beliefs.parcels.carried.size === 0
-                    && !pickupAvailable) {
-                    return currentSpawner;
-                }
-                break;
-            }
-        }
+    // 4. An exploration target is kept until its desire disappears. One unseen
+    //    spawner is as good as another, so re-ranking only wastes the moves
+    //    already spent walking. Safe because an exploration desire is never in
+    //    the set together with a pickup or a delivery.
+    if (active.type === 'go_to_spawner') return active;
+
+    // 5. Otherwise stay committed, unless a challenger beats the current goal.
+    //    The best challenger is picked among those that qualify, not by testing
+    //    the best desire overall: while delivering, the best overall is often
+    //    another delivery, which would hide a pickup that does qualify.
+    let challenger = null;
+    for (const desire of desires) {
+        if (!outranks(desire, active)) continue;
+        if (!challenger || desire.utility > challenger.utility) challenger = desire;
     }
-
-    return selectBestDesire(desires);
+    return challenger ?? active;
 }
