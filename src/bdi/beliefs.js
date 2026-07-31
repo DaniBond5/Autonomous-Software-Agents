@@ -4,10 +4,21 @@ import {
 } from "../utils/geometry.js";
 
 const positionKey = ({ x, y }) => `${x},${y}`;
+
+/**
+ * This constant acts as a function that checks and returns if a given position is finite.
+ * @param {{x: number, y: number}} position 
+ * @returns {boolean} true if the position is finite, false otherwise.
+*/
 const isFinitePosition = position =>
     Number.isFinite(position?.x)
     && Number.isFinite(position?.y);
 
+/**
+ * This function returns a number representing the parcel reward decay interval in milliseconds given a string stating the interval.
+ * @param {string} event 
+ * @returns {number} the parcel decay interval in milliseconds
+*/
 function parseLocalDecayIntervalMs(event) {
     switch (event) {
         case '1s': return 1000;
@@ -21,6 +32,12 @@ function parseLocalDecayIntervalMs(event) {
     }
 }
 
+/**
+ * This function updates every spawner and delivery point contained in their respective maps.
+ * Specifically, it updates the boolean canReachOperationalx (x/spawner/delivery).
+ * This function is particularly useful for maps where there are delivery tiles or spawner tiles that lead to deadlocks once reached.
+ * @param {Beliefs} beliefs an agent's beliefs
+*/
 function updateOperationalReachability(beliefs) {
     const spawners = Array.from(beliefs.world.spawners.values());
     const deliveries = Array.from(beliefs.world.deliveries.values());
@@ -52,6 +69,7 @@ function updateOperationalReachability(beliefs) {
             ))
         );
     }
+
     for (const spawner of spawners) {
         spawner.canReachOperationalDelivery = deliveries.some(delivery =>
             delivery.canReachOperationalSpawner === true
@@ -64,11 +82,19 @@ function updateOperationalReachability(beliefs) {
 }
 
 /**
- * Holds the agent's own data: identity, position and score.
- */
+ * This class represents the agent's own data: identity, position and score.
+ * It also allows to update them through different functions.
+*/
 class Me {
     constructor() {
+        /**
+         * @type {string}
+         */
         this.id = "";
+
+        /**
+         * @type {string}
+         */
         this.name = "";
 
         /**
@@ -83,12 +109,12 @@ class Me {
     }
 
     /**
-     * Updates the agent's own data.
-     * On the first call it initialises id and name, the following calls update
-     * position and score.
-     * Position is updated ONLY when both x and y are integers (gates fractional
-     * movement steps).
-     */
+     * This function updates the agent's data.
+     * The first time this function is called, id and name are initialised.
+     * The following calls update position and score.
+     * Position is updated ONLY when both x and y are integers, gating fractional steps.
+     * @param {{id: string, name: string, x: number, y: number}} agentData 
+    */
     update({ id, name, x, y, score }) {
         if (this.id == "" || this.name == "") {
             this.id = id;
@@ -102,10 +128,11 @@ class Me {
     }
 
     /**
-     * Applies the authoritative position confirmed by a successful move.
-     * Used right after emitMove resolves, so re-planning the next cycle starts
-     * from the real tile instead of a stale onYou belief (prevents overshoot).
-     */
+     * This function updates the agent's position and is to be used after a succesful move.
+     * In particular, this function is used right after emitMove resolves succesfully.
+     * Doing this allows the re-planning in the next cycle to start from the actual agent's position instead of relying on a stale onYou belief.
+     * @param {{x: number, y: number}} position 
+    */
     applyMovement({ x, y }) {
         this.pos.x = Math.round(x);
         this.pos.y = Math.round(y);
@@ -113,33 +140,41 @@ class Me {
 }
 
 /**
- * Holds parcel data: parcels currently visible, remembered and carried by the agent.
- */
+ * This class represents the agent's beliefs regarding parcels.
+ * In particular, this class contains a Map for visible, known and carried parcels.
+ * The class also provides functions to update these maps given the respective sensing.
+*/
 class Parcels {
     constructor() {
         /**
+         * This map contains all the parcels seen during the latest sensing.
          * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel> }
-         */
+        */
         this.visible = new Map();
 
         /**
-         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel & {observedAt: number}> }
-         */
+         * This map contains all "known" parcels, along a @type {Date} variable stating when they've been observed.
+         * A known parcel is a parcel that has been observed in the past during previous sensings.
+         * This map holds these parcels until their last known position is observed and they're not present.
+         * Before that happens, this map can contain outdated information by design.
+         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel & {observedAt: Date}> }
+        */
         this.known = new Map();
 
         /**
+         * This map contains the parcels currently carried by the agent.
          * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel> }
-         */
+        */
         this.carried = new Map();
     }
 
     /**
-     * Updates parcel beliefs from the current sensing.
-     * A remembered parcel is forgotten when its last known position is observed without it.
+     * This function updates parcel beliefs given the current sensing.
+     * A known parcel is forgotten when its last known position is observed without it.
      * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} perceivedParcels
      * @param {string} meId
      * @param {function({x: number, y: number}): boolean} isVisible
-     */
+    */
     update(perceivedParcels, meId, isVisible) {
         this.visible.clear();
         const seenNow = new Set();
@@ -178,11 +213,12 @@ class Parcels {
     }
 
     /**
-     * Reconciles parcel beliefs with a successful pickup or putdown outcome.
+     * This function reconciles parcel beliefs after a successful pickup or putdown outcome.
+     * In particular it updates the agent's parcel beliefs given the succesful result of either action.
      * @param {{status: string, action: {action: string} | null, result: *}} outcome
      * @param {string} meId
      * @param {{x: number, y: number}} mePos
-     */
+    */
     reconcileActionOutcome(outcome, meId, mePos) {
         const actionType = outcome?.action?.action;
         if (outcome?.status !== 'succeeded'
@@ -229,11 +265,11 @@ class Parcels {
     }
 
     /**
-     * Returns remembered free parcels with their reward estimated at the current time.
-     * Parcels whose estimated reward is no longer positive are forgotten.
-     * @param {number} localDecayIntervalMs local decay extrapolation interval in milliseconds
-     * @returns {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]}
-     */
+     * This function returns known parcels with their reward estimated using the current time and the parcel decay interval.
+     * Parcels whose estimated reward is not positive are forgotten.
+     * @param {number} localDecayIntervalMs local decay interval in milliseconds
+     * @returns {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} the available known parcels with their estimated reward.
+    */
     availableKnown(localDecayIntervalMs) {
         const now = Date.now();
         const available = [];
@@ -257,8 +293,9 @@ class Parcels {
     }
 
     /**
-     * @returns total score of carried parcels
-     */
+     * This function computes and returns the total score of the parcels currently carried by the agent.
+     * @returns {number} total score of carried parcels by the agent.
+    */
     carriedScore() {
         let score = 0;
         for (const parcel of this.carried.values()) {
@@ -269,24 +306,30 @@ class Parcels {
 }
 
 /**
- * Holds remembered crate positions.
- */
+ * This class represents the agent's beliefs regarding crates, if they're present on the current map.
+ * It also contains functions that update the agent's beliefs over crates upon sensing events and actions.
+*/
 class Crates {
     constructor() {
-        /** @type {Map<string, {id: string, x: number, y: number}>} */
+        /**
+         * This map contains the crates perceived by the agent.
+         * The crates are stored using their id as the key, and they're forgotten when their position is observed without them.
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate>} 
+        */
         this.known = new Map();
 
         /**
-         * Position view of `known`, which stays the source of truth.
-         * getAt runs inside the neighbour expansion of the corridor search,
-         * once per visited tile, where scanning every crate would be costly.
-         * @type {Map<string, {id: string, x: number, y: number}>}
-         */
+         * This map contains the known crates by the agent, indexed by their position instead of their id.
+         * It effectively acts as a view of `known`, which remains the source of belief.
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate>}
+        */
         this.byPosition = new Map();
     }
 
-    /** Rebuilds the position view. Crates are few, so a full rebuild is
-     * simpler than keeping the two views in step by hand. */
+    /** 
+     * This function rebuilds the byPosition map. 
+     * Since crates are few, a full rebuild is simpler than maintaining both maps by hand and the cost is acceptable. 
+    */
     reindexByPosition() {
         this.byPosition.clear();
         for (const crate of this.known.values()) {
@@ -294,6 +337,11 @@ class Crates {
         }
     }
 
+    /**
+     * This function updates the agent's beliefs of the crates given their sensing and if they're currently visible.
+     * @param {import("@unitn-asa/deliveroo-js-sdk/types/IOSensing.js").IOCrate []} perceivedCrates 
+     * @param {boolean} isVisible 
+    */
     update(perceivedCrates, isVisible) {
         const seenNow = new Set();
 
@@ -323,16 +371,28 @@ class Crates {
         this.reindexByPosition();
     }
 
+    /**
+     * This function checks and returns if a given position is occupied by a crate.
+     * @param {{x: number, y: number}} position 
+     * @returns {boolean} true if the given position is occupied by a crate, false otherwise.
+    */
     isOccupied(position) {
         return this.getAt(position) !== null;
     }
 
-    /** Returns the crate occupying a position, or null when it is free. */
+    /** 
+     * This function returns the crate occupying a given position, or null when that position doesn't contain one.
+     * @returns {import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate | null} the crate occupying the position or null if not present.
+    */
     getAt(position) {
         return this.byPosition.get(positionKey(position)) ?? null;
     }
 
-    /** Reconciles a successful PDDL push with the remembered crate position. */
+    /**
+     * This function reconciles a successful PDDL push with the remembered crate position.
+     * @param {Promise<import("./execution.js").ActionOutcome>} outcome
+     * @returns 
+    */
     reconcileActionOutcome(outcome) {
         const action = outcome?.action;
         if (
@@ -368,24 +428,25 @@ class Crates {
 }
 
 /**
- * Holds the other agents perceived on the map.
- */
+ * This class represents the agent's beliefs regarding the other agents perceived on the map.
+ * It also contains functions to update these beliefs given the perceived agents through sensing and a utility function.
+*/
 class Agents {
     constructor() {
         /**
+         * This map contains the agents perceived through the latest sensing.
          * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOAgent>}
          */
         this.others = new Map();
     }
 
     /**
-     * Replaces the perceived agents with the latest sensing.
-     * An agent caught mid-move keeps its fractional coordinate: it is exact,
-     * and it is what tells us that two tiles are locked instead of one.
+     * This function replaces the perceived agents with the ones contained in the latest sensing.
+     * An agent caught mid-move keeps its fractional coordinate: this is done by design,
+     * as when an agent is mid-move two tiles are locked instead of one.
      * @param {import("@unitn-asa/deliveroo-js-sdk").IOAgent[]} perceivedAgents
      */
     update(perceivedAgents) {
-
         const seenNow = new Set();
 
         for (const a of perceivedAgents) {
@@ -402,14 +463,13 @@ class Agents {
     }
 
     /**
-     * Returns whether another agent occupies the given tile.
-     * The server locks both the starting and the ending tile of a move, and it
-     * reports the mover on a fractional coordinate in between, so both tiles
-     * count as taken. For an agent standing still floor and ceil are the same
-     * value and this is the plain equality check.
+     * This function checks and returns whether another agent occupies the given position.
+     * The server locks both the starting and the ending tile of a move.
+     * This is done by the server through fractional agents coordinates, making both tiles count as taken. 
+     * For an agent standing still floor and ceil are the same value and this is the equality check.
      * @param {{x: number, y: number}} position
-     * @returns {boolean}
-     */
+     * @returns {boolean} true if a given position is occupied by another agent, false otherwise.
+    */
     isOccupied(position) {
         for (const agent of this.others.values()) {
             if (position.x >= Math.floor(agent.x)
@@ -421,18 +481,22 @@ class Agents {
     }
 }
 
-// Fallback until the server sends its own movement duration. Only affects how
-// long the agent waits before giving up on a blocked tile, and for how long.
+/**
+ * This value is used as a default value and is used until the server sends its own movement duration.
+ * It states how long the agent waits before giving up on a blocked tile.
+*/
 const DEFAULT_MOVEMENT_DURATION_MS = 1000;
 
-// A blocked tile is granted the time of two moves: long enough for a neighbour
-// that is only passing through, short enough not to stall behind one that
-// stopped there.
+/**
+ * This constant states the amount of time in moves that a blocked tile gives.
+*/
 const BLOCKING_AGENT_WAIT_MOVES = 2;
 
 /**
- * Stores map data, game configuration and observation metadata used by the agent.
- */
+ * This class represents the agent's beliefs over the game's world.
+ * It stores map data, game configuration and observation metadata given by the game server and used by the agent.
+ * It contains functions that allow the agent to update its world beliefs through sensing events and utility functions.
+*/
 class World {
     constructor() {
         /** Number of X coordinates in the map, not the maximum X coordinate. */
@@ -442,29 +506,35 @@ class World {
         this.height = 0;
 
         /**
-         * Tile positions observed in the latest sensing event.
+         * This set contains the visible positions observed in the latest sensing event.
          * @type {Set<string>}
-         */
+        */
         this.visiblePositions = new Set();
 
         /**
-         * Complete map topology keyed by coordinates.
+         * This map contains the whole topology of the current game map. The coordinates are used as keys.
          * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
-         */
+        */
         this.tiles = new Map();
 
         /**
-         * Stores known spawner tiles and the time each one was last checked.
+         * This map stores known spawner tiles, the time each one was last seen and if from their position an "operational" delivery tile can be reached.
+         * An operational delivery tile is one that, when reached, doesn't lead to a deadlock.
+         * This value is useful for certain edge cases in particular maps where reaching a delivery point doesn't allow the agent to leave a dead end.
          * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {lastCheckedAt: number, canReachOperationalDelivery: boolean}>}
-         */
+        */
         this.spawners = new Map();
 
-        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {canReachOperationalSpawner: boolean}>} */
+        /** 
+         * This map contains known delivery tiles, the time each one was last seen and if from their position an "operational" parcel spawner tile can be reached.
+         * An operational spawner tile is one that, when reached, doesn't lead to a deadlock.
+         * Again, this value is useful for the same cases already explained for the spawners map.
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {canReachOperationalSpawner: boolean}>} */
         this.deliveries = new Map();
 
         /**
          * @type {number}
-         */
+        */
         this.movementDuration = -1;
 
         /**
@@ -476,17 +546,21 @@ class World {
         this.localDecayIntervalMs = 0;
 
         /**
+         * Average parcel reward.
          * @type {number}
          */
         this.avgReward = -1;
 
         /**
+         * Variance of the parcels' rewards
          * @type {number}
          */
         this.rewardVariance = -1;
     }
 
-    /** Applies the server game configuration.
+    /** 
+     * This function updates the agent's beliefs of the game world given the respective sensing.
+     * It effectively applies the server game configuration.
      * @param {import ("@unitn-asa/deliveroo-js-sdk/types/IOConfig.js").IOConfig} config
      */
     updateFromConfig(config) {
@@ -503,9 +577,12 @@ class World {
     }
 
     /**
-     * Rebuilds the local map state from the latest map snapshot.
-     * The received tiles are the authoritative source for both topology and dimensions.
+     * This function rebuilds the local map state from the latest game map information received by the server.
+     * The received tiles are the effective source for both topology and dimensions.
      * Width and height are coordinate counts, not maximum valid coordinates.
+     * @param {number} _reportedWidth 
+     * @param {number} _reportedHeight 
+     * @param {import ("@unitn-asa/deliveroo-js-sdk").IOTile []} tileset 
      */
     updateFromMap(_reportedWidth, _reportedHeight, tileset) {
         this.tiles.clear();
@@ -541,7 +618,8 @@ class World {
     }
 
     /**
-     * Replaces the visible-position set with the latest sensing data.
+     * This function rebuilds the visiblePositions set with the latest sensed positions.
+     * @param {{x, y} []} positions 
      */
     updateVisiblePositions(positions) {
         this.visiblePositions.clear();
@@ -553,14 +631,19 @@ class World {
     }
 
     /**
-     * Returns whether a position was observed in the latest sensing event.
+     * This function returns whether a given position was observed in the latest sensing event.
+     * @returns {boolean} true if the given position was observed in the latest sensing, false otherwise.
      */
     isVisible(position) {
         if (!isFinitePosition(position)) return false;
         return this.visiblePositions.has(positionKey(position));
     }
 
-    /** Returns whether a tile can contain or receive a crate. */
+    /**
+     * This function returns whether a given position can contain a crate or if one can be moved there.
+     * @param {{x, y}} position 
+     * @returns true if the given position contains a crate or if one can be moved there, false otherwise.
+     */
     isCrateSpace(position) {
         const tile = this.tiles.get(positionKey(position));
         if (!tile) return false;
@@ -569,7 +652,7 @@ class World {
     }
 
     /**
-     * Updates the last-check time of spawners observed in the current sensing.
+     * This function updates the last check time of the spawners observed with the latest sensing.
      */
     markVisibleSpawners() {
         const checkedAt = Date.now();
@@ -581,9 +664,9 @@ class World {
     }
 
     /**
-     * Returns the locally predicted reward loss during one movement.
-     * A zero interval disables local extrapolation; the server may still decay rewards.
-     * @returns {number} the locally predicted decay per movement
+     * This function returns the locally predicted reward loss during one movement.
+     * A zero interval disables local extrapolation, meaning no decay is applied.
+     * @returns {number} the locally predicted decay per movement, 0 if decay is disabled by the server.
      */
     decayPerMove() {
         if (this.localDecayIntervalMs <= 0) return 0;
@@ -591,9 +674,9 @@ class World {
     }
 
     /**
-     * How long to wait for another agent to clear a tile, in milliseconds.
-     * Counted in movements so the wait scales with the speed of the game.
-     * @returns {number} the wait in milliseconds
+     * This function returns how long to wait for another agent to clear a tile, in milliseconds.
+     * The value is computed in movements so the wait scales with the speed of the game.
+     * @returns {number} the tile clear wait time in milliseconds, scaled with movements.
      */
     blockingAgentWaitMs() {
         const movementDuration = Number.isFinite(this.movementDuration)
@@ -605,7 +688,7 @@ class World {
 }
 
 /**
- * Aggregator that owns the belief components and wires them to the socket.
+ * This class is an Aggregator that owns the belief components and wires them to the socket.
  * It only coordinates and delegates, it contains no domain logic.
  * One instance per agent, built by agent.js, so two agents in the same
  * process cannot overwrite each other's beliefs.
