@@ -1,145 +1,138 @@
-# Autonomous-Software-Agents
+# Autonomous Software Agents — Deliveroo.js
 
-A project focused on the design and implementation of autonomous software agents for parcel delivery in the Deliveroo.js environment, developed for the Autonomous Software Agents course at the University of Trento.
+An autonomous agent that plays Deliveroo.js on the user's behalf, collecting and delivering
+parcels. Built on a BDI (Belief–Desire–Intention) architecture with automated planning.
 
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
-[![JavaScript](https://img.shields.io/badge/JavaScript-ES6%2B-yellow.svg)](https://developer.mozilla.org/en-US/docs/Web/JavaScript)
-[![PDDL](https://img.shields.io/badge/PDDL-Planning-blue.svg)](https://planning.wiki/)
-
-**Course:** Autonomous Software Agents  
-**Institution:** University of Trento
+**Course:** Autonomous Software Agents — University of Trento
+**Authors:** Sasha Petkovic (sasha.petkovic@studenti.unitn.it), Daniele Buondonno (daniele.buondonno@studenti.unitn.it)
+**Report:** 
 
 ---
 
 ## Overview
 
-This project develops autonomous software agents for the Deliveroo.js environment.
+The agent runs one BDI cycle per action. Each cycle it refreshes its beliefs from the
+latest sensing event, generates the goals that are achievable right now, commits to one of
+them, and plans a **single** next action toward it. Planning one step at a time is what
+keeps the agent reactive: it is never locked into a multi-step plan that the world can
+invalidate halfway through.
 
-The project combines reactive decision-making, shortest-path navigation, and automated planning to handle ordinary routes, dynamic obstacles, directional tiles, and movable crates.
+| Stage of the cycle | Where it lives |
+|---|---|
+| Beliefs — own state, parcels, other agents, crates, map | `src/bdi/beliefs.js` |
+| Desires — candidate goals, each scored by a utility | `src/bdi/desires.js` |
+| Intention — commitment to one goal, and its revision | `src/bdi/intentions.js` |
+| Plan — route to the goal, plus the plan library | `src/bdi/planning.js` |
+| Execution — move, pickup and putdown on the socket | `src/bdi/execution.js` |
+| Control loop — wires the stages together | `src/agent.js` |
 
-## Main Features
+Routing normally uses breadth-first search over the walkable tiles, which is optimal on a
+uniform-cost grid. When movable crates block every ordinary route, the agent falls back to
+a PDDL planner that can reason about pushing them out of the way.
 
-- Belief-Desire-Intention architecture
-- Dynamic belief updates from Deliveroo.js sensing events
-- Utility-based pickup, delivery, and exploration decisions
-- Persistent intention selection and revision
-- BFS shortest-path navigation
-- Directional tile support
-- Temporary obstacle and collision handling
-- PDDL planning for routes blocked by movable crates
-- Validation of move and push actions
-- Execution of move, pickup, and putdown actions
-- Belief reconciliation after server acknowledgements
-- Configurable runtime logging
+The reasoning behind each design decision, and the known limitations, are covered in the
+report.
+
+---
 
 ## Prerequisites
 
-- Node.js 18 or newer
-- npm
+- Node.js 18 or newer, and npm
 - A running Deliveroo.js server
-- A valid Deliveroo.js agent token
-- Internet access for the online PDDL solver
+- A Deliveroo.js agent token
+- Internet access, for the online PDDL solver
 
 ## Setup
 
-Clone the repository:
-
-```bash
-git clone https://github.com/SashaPetkovic/Autonomous-Software-Agents.git
-cd Autonomous-Software-Agents
-```
-
-Install the dependencies:
+**1. Install the dependencies.** This step is required: `node_modules/` is not part of the
+repository.
 
 ```bash
 npm ci
 ```
 
-Create the local environment file:
+Use `npm install` if you do not have a `package-lock.json`.
+
+**2. Start a Deliveroo.js server.** Follow the instructions in the
+[Deliveroo.js repository](https://github.com/unitn-ASA/Deliveroo.js):
+
+```bash
+git clone https://github.com/unitn-ASA/Deliveroo.js.git
+cd Deliveroo.js && npm install && npm run build && npm start
+```
+
+The server listens on `http://localhost:8080`.
+
+**3. Get a token.** Open the server address in a browser, enter a name for the player, and
+copy the token that is generated. Each token identifies one player: give the agent a token
+that no one else is using, or you will both be controlling the same character.
+
+**4. Create the environment file.**
 
 ```bash
 cp .env.example .env
 ```
 
-Configure the required values:
+Then fill it in:
 
 ```env
 HOST=http://localhost:8080
-TOKEN=replace_with_bdi_agent_token
+TOKEN=your_agent_token
 LLM_TOKEN=
 ```
 
-- `HOST` is the Deliveroo.js server address.
-- `TOKEN` is the authentication token used by the BDI agent.
-- `LLM_TOKEN` is reserved for the future LLM-based agent.
+`LLM_TOKEN` is reserved for the LLM-based agent and can be left empty.
 
-Do not commit the `.env` file.
+`.env` is ignored by git and must not be committed.
 
-## Deliveroo.js Server
-
-By default, the agent connects to:
-
-```text
-http://localhost:8080
-```
-
-The server must be started separately by following the instructions in the [Deliveroo.js repository](https://github.com/unitn-ASA/Deliveroo.js).
-
-## PDDL Solver
-
-When movable crates block an ordinary BFS route, the agent calls `onlineSolver` from `@unitn-asa/pddl-client`. The domain and the generated problem are sent over the network and the plan comes back from that remote service, so no planner has to be installed on the machine running the agent, but internet access is required.
-
-In the code and in the log messages, `local` and `global` describe the scope of the problem handed to that same remote solver, not where it runs: `local` covers only the crate corridor between an entry and an exit tile, `global` covers the whole map.
-
-The PDDL domain is stored in:
-
-```text
-src/pddl/crates-domain.pddl
-```
-
-## Running the Agent
-
-Start the BDI agent with:
+## Running
 
 ```bash
 npm start
 ```
 
-This command runs:
+Open the server address in a browser with the same token to watch the agent play from its
+own point of view.
 
-```bash
-node src/agent.js
-```
+## Configuration
 
-## Repository Structure
+Credentials live in `.env`. Everything else is in `src/config.js`:
+
+| Key | Purpose |
+|---|---|
+| `debug` | Enables the runtime log written to standard output |
+| `pddl.timeoutMs` | How long to wait for the online solver before giving up |
+| `pddl.retryMs` | How long to wait before retrying a failed solver request |
+
+## Repository structure
 
 ```text
 .
-├── .env.example
-├── .gitignore
-├── package.json
-├── package-lock.json
-├── README.md
+├── .env.example              # template for the local credentials file
+├── .gitignore                # keeps node_modules/ and .env out of the repository
+├── package.json              # dependencies and the start script
+├── package-lock.json         # pinned dependency versions, so installs are reproducible
+├── README.md                 # this file
 └── src/
-    ├── agent.js
-    ├── config.js
+    ├── agent.js              # BDI control loop: senses, deliberates, plans, acts
+    ├── config.js             # runtime settings; credentials are read from .env
     ├── bdi/
-    │   ├── beliefs.js
-    │   ├── desires.js
-    │   ├── execution.js
-    │   ├── intentions.js
-    │   └── planning.js
+    │   ├── beliefs.js        # world model: Me, Parcels, Agents, Crates, World
+    │   ├── desires.js        # candidate goals and the utility that scores them
+    │   ├── intentions.js     # commitment to one goal, and when to give it up
+    │   ├── planning.js       # Planner: routing, plan library, deferred goals
+    │   └── execution.js      # move, pickup and putdown on the socket
     ├── pddl/
-    │   ├── crate-planner.js
-    │   └── crates-domain.pddl
+    │   ├── crate-planner.js  # CratePlanner: PDDL routes around movable crates
+    │   └── crates-domain.pddl # PDDL domain: actions for moving and pushing
     └── utils/
-        └── geometry.js
+        └── geometry.js       # breadth-first search, distances and grid geometry
 ```
 
-## Main Dependencies
+## Dependencies
 
 | Package | Version | Purpose |
 |---|---:|---|
-| `@unitn-asa/deliveroo-js-sdk` | `^1.3.10` | Deliveroo.js connection and actions |
-| `@unitn-asa/pddl-client` | `1.6.2` | Online PDDL planning |
-| `dotenv` | `^17.4.2` | Loading local environment variables |
+| `@unitn-asa/deliveroo-js-sdk` | `^1.3.10` | Connection and actions |
+| `@unitn-asa/pddl-client` | `1.6.2` | Online PDDL solver |
+| `dotenv` | `^17.4.2` | Loading `.env` |
