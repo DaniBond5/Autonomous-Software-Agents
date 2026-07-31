@@ -2,6 +2,7 @@ import config from "../config.js";
 import { desireKey } from "./desires.js";
 import { BFS, findCrateCorridor } from "../utils/geometry.js";
 import { CratePlanner } from "../pddl/crate-planner.js";
+import { POSITION_KEY } from "./beliefs.js";
 
 const dbg = (...args) => {
     if (config.debug) console.log("[agent]", ...args);
@@ -19,7 +20,6 @@ const roundPos = position => ({
     x: Math.round(position.x),
     y: Math.round(position.y)
 });
-const positionKey = ({ x, y }) => `${x},${y}`;
 const samePosition = (a, b) => a.x === b.x && a.y === b.y;
 
 // Two rejections in a row mean the route is really taken, not that we were
@@ -207,10 +207,10 @@ export class Planner {
         const currentPosition = roundPos(beliefs.me.pos);
         const occupiedCratePositions = new Set();
         for (const crate of beliefs.crates.known.values()) {
-            occupiedCratePositions.add(positionKey(crate));
+            occupiedCratePositions.add(POSITION_KEY(crate));
         }
         const isCrateBlocked = position =>
-            occupiedCratePositions.has(positionKey(position));
+            occupiedCratePositions.has(POSITION_KEY(position));
         const isBlockedForDetour = position => {
             const isAdjacent = Math.abs(position.x - currentPosition.x)
                 + Math.abs(position.y - currentPosition.y) === 1;
@@ -408,7 +408,7 @@ export class Planner {
             const approach = this.findOrdinaryPath(
                 beliefs,
                 this.activeCrateTask.entry,
-                `${key}:approach:${positionKey(this.activeCrateTask.entry)}`
+                `${key}:approach:${POSITION_KEY(this.activeCrateTask.entry)}`
             );
             if (!approach.exists) {
                 this.resetAgentBlock();

@@ -1,3 +1,5 @@
+import { POSITION_KEY } from "../bdi/beliefs.js";
+
 const directionalTiles = {
     '↑': { dx: 0, dy: 1 },
     '→': { dx: 1, dy: 0 },
@@ -12,7 +14,6 @@ const CARDINAL_DIRECTIONS = Object.freeze([
     Object.freeze({ dx: 0, dy: -1 }),
 ]);
 
-const positionKey = ({ x, y }) => `${x},${y}`;
 
 /**
  * @typedef {Object} PathfindingOptions
@@ -37,7 +38,7 @@ export function shortestPathsFrom(beliefs, start, options = {}) {
     if (!beliefs || !start || !isPositionTraversable(beliefs, start)) return null;
 
     const startingPosition = { x: start.x, y: start.y };
-    const startKey = positionKey(startingPosition);
+    const startKey = POSITION_KEY(startingPosition);
     const distances = new Map([[startKey, 0]]);
     const predecessors = new Map();
     const frontier = [startingPosition];
@@ -45,10 +46,10 @@ export function shortestPathsFrom(beliefs, start, options = {}) {
 
     while (frontierIndex < frontier.length) {
         const current = frontier[frontierIndex++];
-        const currentDistance = distances.get(positionKey(current));
+        const currentDistance = distances.get(POSITION_KEY(current));
 
         for (const neighbor of getNeighbors(beliefs, current, options)) {
-            const neighborKey = positionKey(neighbor);
+            const neighborKey = POSITION_KEY(neighbor);
             if (distances.has(neighborKey)) continue;
 
             distances.set(neighborKey, currentDistance + 1);
@@ -68,7 +69,7 @@ export function shortestPathsFrom(beliefs, start, options = {}) {
  */
 export function distanceFromSearch(search, target) {
     if (!search || !target) return Infinity;
-    return search.distances.get(positionKey(target)) ?? Infinity;
+    return search.distances.get(POSITION_KEY(target)) ?? Infinity;
 }
 
 /**
@@ -81,12 +82,12 @@ function pathFromSearch(search, target) {
     if (!Number.isFinite(distanceFromSearch(search, target))) return false;
 
     const path = [];
-    const startKey = positionKey(search.start);
+    const startKey = POSITION_KEY(search.start);
     let current = { x: target.x, y: target.y };
 
-    while (positionKey(current) !== startKey) {
+    while (POSITION_KEY(current) !== startKey) {
         path.push(current);
-        current = search.predecessors.get(positionKey(current));
+        current = search.predecessors.get(POSITION_KEY(current));
     }
 
     return path.reverse();
@@ -106,8 +107,8 @@ export function BFS(beliefs, goalTile, options = {}) {
         || !isPositionTraversable(beliefs, startingPosition)) return false;
 
     const start = { x: startingPosition.x, y: startingPosition.y };
-    const startKey = positionKey(start);
-    const goalKey = positionKey(goalTile);
+    const startKey = POSITION_KEY(start);
+    const goalKey = POSITION_KEY(goalTile);
     if (startKey === goalKey) return [];
 
     const search = {
@@ -120,10 +121,10 @@ export function BFS(beliefs, goalTile, options = {}) {
 
     while (frontierIndex < frontier.length) {
         const current = frontier[frontierIndex++];
-        const currentDistance = search.distances.get(positionKey(current));
+        const currentDistance = search.distances.get(POSITION_KEY(current));
 
         for (const neighbor of getNeighbors(beliefs, current, options)) {
-            const neighborKey = positionKey(neighbor);
+            const neighborKey = POSITION_KEY(neighbor);
             if (search.distances.has(neighborKey)) continue;
 
             search.distances.set(neighborKey, currentDistance + 1);
@@ -161,7 +162,7 @@ export function isMoveAllowed(beliefs, from, to) {
     const dy = to.y - from.y;
     if (Math.abs(dx) + Math.abs(dy) !== 1 || !isPositionTraversable(beliefs, to)) return false;
 
-    const destinationDirection = directionalTiles[beliefs.world.tiles.get(positionKey(to)).type];
+    const destinationDirection = directionalTiles[beliefs.world.tiles.get(POSITION_KEY(to)).type];
     return !destinationDirection
         || dx !== -destinationDirection.dx
         || dy !== -destinationDirection.dy;
@@ -219,8 +220,8 @@ export function findCrateCorridor(beliefs, goalTile) {
         || !isPositionTraversable(beliefs, startingPosition)) return false;
 
     const start = { x: startingPosition.x, y: startingPosition.y };
-    const startKey = positionKey(start);
-    const goalKey = positionKey(goalTile);
+    const startKey = POSITION_KEY(start);
+    const goalKey = POSITION_KEY(goalTile);
     if (startKey === goalKey) return false;
 
     const search = {
@@ -233,7 +234,7 @@ export function findCrateCorridor(beliefs, goalTile) {
 
     while (frontierIndex < frontier.length) {
         const current = frontier[frontierIndex++];
-        const currentDistance = search.distances.get(positionKey(current));
+        const currentDistance = search.distances.get(POSITION_KEY(current));
 
         for (const { dx, dy } of CARDINAL_DIRECTIONS) {
             const neighbor = { x: current.x + dx, y: current.y + dy };
@@ -248,7 +249,7 @@ export function findCrateCorridor(beliefs, goalTile) {
                 : isMoveAllowed(beliefs, current, neighbor);
             if (!allowed) continue;
 
-            const neighborKey = positionKey(neighbor);
+            const neighborKey = POSITION_KEY(neighbor);
             if (search.distances.has(neighborKey)) continue;
 
             search.distances.set(neighborKey, currentDistance + 1);

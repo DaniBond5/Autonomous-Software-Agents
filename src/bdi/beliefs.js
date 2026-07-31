@@ -3,7 +3,12 @@ import {
     shortestPathsFrom
 } from "../utils/geometry.js";
 
-const positionKey = ({ x, y }) => `${x},${y}`;
+/**
+ * This constant is used to convert position coordinates into a standard key to be used for all data structures that involve positions and need one.
+ * @param {{x, y}} position 
+ * @returns {string} a string representing a key to be used for data structures involving positions.
+ */
+export const POSITION_KEY = ({ x, y }) => `${x},${y}`;
 
 /**
  * This constant acts as a function that checks and returns if a given position is finite.
@@ -333,7 +338,7 @@ class Crates {
     reindexByPosition() {
         this.byPosition.clear();
         for (const crate of this.known.values()) {
-            this.byPosition.set(positionKey(crate), crate);
+            this.byPosition.set(POSITION_KEY(crate), crate);
         }
     }
 
@@ -385,7 +390,7 @@ class Crates {
      * @returns {import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate | null} the crate occupying the position or null if not present.
     */
     getAt(position) {
-        return this.byPosition.get(positionKey(position)) ?? null;
+        return this.byPosition.get(POSITION_KEY(position)) ?? null;
     }
 
     /**
@@ -626,7 +631,7 @@ class World {
 
         for (const position of positions ?? []) {
             if (!isFinitePosition(position)) continue;
-            this.visiblePositions.add(positionKey(position));
+            this.visiblePositions.add(POSITION_KEY(position));
         }
     }
 
@@ -636,7 +641,7 @@ class World {
      */
     isVisible(position) {
         if (!isFinitePosition(position)) return false;
-        return this.visiblePositions.has(positionKey(position));
+        return this.visiblePositions.has(POSITION_KEY(position));
     }
 
     /**
@@ -645,7 +650,7 @@ class World {
      * @returns true if the given position contains a crate or if one can be moved there, false otherwise.
      */
     isCrateSpace(position) {
-        const tile = this.tiles.get(positionKey(position));
+        const tile = this.tiles.get(POSITION_KEY(position));
         if (!tile) return false;
         const tileType = String(tile.type);
         return tileType === '5' || tileType === '5!';

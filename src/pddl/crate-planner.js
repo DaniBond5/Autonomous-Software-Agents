@@ -7,6 +7,7 @@ import {
     isPushGeometryAllowed,
     isPushTransitionAllowed
 } from "../utils/geometry.js";
+import { POSITION_KEY } from "../bdi/beliefs.js";
 
 const DOMAIN_NAME = "deliveroo-crates";
 
@@ -50,7 +51,6 @@ const directions = [
     { dx: 0, dy: -1 }
 ];
 
-const positionKey = ({ x, y }) => `${x},${y}`;
 const samePosition = (a, b) => a.x === b.x && a.y === b.y;
 const validPosition = position =>
     Number.isInteger(position?.x) && Number.isInteger(position?.y);
@@ -131,12 +131,12 @@ function buildProblem(beliefs, planningGoal) {
     const tileByName = new Map();
     for (const tile of tiles) {
         const name = tileName(tile);
-        tileNameByPosition.set(positionKey(tile), name);
+        tileNameByPosition.set(POSITION_KEY(tile), name);
         tileByName.set(name, tile);
     }
 
-    const currentTileName = tileNameByPosition.get(positionKey(currentPosition));
-    const targetTileName = tileNameByPosition.get(positionKey(planningGoal));
+    const currentTileName = tileNameByPosition.get(POSITION_KEY(currentPosition));
+    const targetTileName = tileNameByPosition.get(POSITION_KEY(planningGoal));
     if (!currentTileName || !targetTileName) {
         return { error: "agent position or target is not traversable" };
     }
@@ -150,7 +150,7 @@ function buildProblem(beliefs, planningGoal) {
         return { error: "invalid known crate" };
     }
     if (crates.some(crate =>
-        !tileNameByPosition.has(positionKey(crate)))) {
+        !tileNameByPosition.has(POSITION_KEY(crate)))) {
         return { error: "known crate is outside the traversable map" };
     }
     crates.sort((a, b) => a.id.localeCompare(b.id));
@@ -171,7 +171,7 @@ function buildProblem(beliefs, planningGoal) {
     const crateByPosition = new Map();
     const cratePositionById = new Map();
     for (const crate of crates) {
-        const key = positionKey(crate);
+        const key = POSITION_KEY(crate);
         if (crateByPosition.has(key)) {
             return { error: "multiple crates on one tile" };
         }
@@ -181,13 +181,13 @@ function buildProblem(beliefs, planningGoal) {
 
     const init = [`(at-agent ${currentTileName})`];
     for (const crate of crates) {
-        const crateTileName = tileNameByPosition.get(positionKey(crate));
+        const crateTileName = tileNameByPosition.get(POSITION_KEY(crate));
         init.push(`(crate-at ${crateNameById.get(crate.id)} ${crateTileName})`);
     }
 
     for (const tile of tiles) {
-        const name = tileNameByPosition.get(positionKey(tile));
-        if (!crateByPosition.has(positionKey(tile))) {
+        const name = tileNameByPosition.get(POSITION_KEY(tile));
+        if (!crateByPosition.has(POSITION_KEY(tile))) {
             init.push(`(crate-free ${name})`);
         }
         if (beliefs.world.isCrateSpace(tile)) {
@@ -196,10 +196,10 @@ function buildProblem(beliefs, planningGoal) {
     }
 
     for (const from of tiles) {
-        const fromName = tileNameByPosition.get(positionKey(from));
+        const fromName = tileNameByPosition.get(POSITION_KEY(from));
         for (const { dx, dy } of directions) {
             const to = { x: from.x + dx, y: from.y + dy };
-            const toName = tileNameByPosition.get(positionKey(to));
+            const toName = tileNameByPosition.get(POSITION_KEY(to));
             if (toName && isMoveAllowed(beliefs, from, to)) {
                 init.push(`(adjacent ${fromName} ${toName})`);
             }
@@ -208,13 +208,13 @@ function buildProblem(beliefs, planningGoal) {
 
     for (const from of tiles) {
         if (!beliefs.world.isCrateSpace(from)) continue;
-        const fromName = tileNameByPosition.get(positionKey(from));
+        const fromName = tileNameByPosition.get(POSITION_KEY(from));
 
         for (const { dx, dy } of directions) {
             const behind = { x: from.x - dx, y: from.y - dy };
             const to = { x: from.x + dx, y: from.y + dy };
-            const behindName = tileNameByPosition.get(positionKey(behind));
-            const toName = tileNameByPosition.get(positionKey(to));
+            const behindName = tileNameByPosition.get(POSITION_KEY(behind));
+            const toName = tileNameByPosition.get(POSITION_KEY(to));
 
             if (
                 behindName
@@ -266,7 +266,7 @@ function normalizePlan(plan, snapshot, target) {
     const cratePositionById = new Map(snapshot.cratePositionById);
     const crateIdByPosition = new Map(
         [...cratePositionById].map(([id, position]) =>
-            [positionKey(position), id])
+            [POSITION_KEY(position), id])
     );
 
     for (const step of plan) {
@@ -294,7 +294,7 @@ function normalizePlan(plan, snapshot, target) {
                 || !to
                 || !dir
                 || !samePosition(expectedAgentPosition, from)
-                || crateIdByPosition.has(positionKey(to))
+                || crateIdByPosition.has(POSITION_KEY(to))
             ) {
                 return { error: "invalid move transition" };
             }
@@ -331,7 +331,7 @@ function normalizePlan(plan, snapshot, target) {
                 || !samePosition(expectedAgentPosition, behind)
                 || !currentCratePosition
                 || !samePosition(currentCratePosition, from)
-                || crateIdByPosition.has(positionKey(to))
+                || crateIdByPosition.has(POSITION_KEY(to))
             ) {
                 return { error: "invalid push transition" };
             }
@@ -347,8 +347,8 @@ function normalizePlan(plan, snapshot, target) {
                 crateFrom: { ...from },
                 crateTo: { ...to }
             });
-            crateIdByPosition.delete(positionKey(from));
-            crateIdByPosition.set(positionKey(to), crateId);
+            crateIdByPosition.delete(POSITION_KEY(from));
+            crateIdByPosition.set(POSITION_KEY(to), crateId);
             cratePositionById.set(crateId, { ...to });
             expectedAgentPosition = from;
             continue;
