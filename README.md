@@ -1,10 +1,10 @@
-# Autonomous Software Agents — Deliveroo.js
+# Autonomous Software Agents - Deliveroo.js
 
 An autonomous agent that plays Deliveroo.js on the user's behalf, collecting and delivering
-parcels. Built on a BDI (Belief–Desire–Intention) architecture with automated planning.
+parcels. Built on a BDI (Belief-Desire-Intention) architecture with automated planning.
 
-**Course:** Autonomous Software Agents — University of Trento
-**Authors:** Sasha Petkovic (sasha.petkovic@studenti.unitn.it), Daniele Buondonno (daniele.buondonno@studenti.unitn.it)
+**Course:** Autonomous Software Agents - University of Trento
+**Authors:** Sasha Petkovic (sasha.petkovic@studenti.unitn.it, 264689), Daniele Buondonno (daniele.buondonno@studenti.unitn.it, 267888)
 **Report:** 
 
 ---
