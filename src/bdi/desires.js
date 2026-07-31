@@ -7,7 +7,7 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
 /**
  * A desire is a candidate goal the agent could pursue. All variants expose a
  * `target`, so intention handling remains independent of the desire type.
- * The terminal action (pickup / putdown / nothing) is dispatched on `type`.
+ * The terminal action (pickup / putdown / nothing) is defined with `type`.
  *
  * @typedef {Object} Desire
  * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'} type
@@ -28,7 +28,12 @@ export function desireKey(desire) {
 }
 
 /**
- * Prefers operational delivery candidates when at least one is available.
+ * This function returns an array of the delivery tiles present in the map.
+ * It gives priority to operational delivery tiles, for the definition of operational tiles refer to the comments in Beliefs.
+ * If at least one operational delivery tile is present, an array containing them is returned.
+ * If none are present, all delivery tiles are returned. 
+ * @param {import ("@unitn-asa/deliveroo-js-sdk").IOTile[]} candidates 
+ * @returns {import ("@unitn-asa/deliveroo-js-sdk").IOTile[]} an array of only the operational delivery tiles if present, all delivery tiles otherwise.
  */
 function preferOperationalDeliveryCandidates(candidates) {
     const operational = candidates.filter(candidate =>
@@ -38,7 +43,9 @@ function preferOperationalDeliveryCandidates(candidates) {
 }
 
 /**
- * Selects the preferred reachable delivery with the shortest path.
+ * This function returns the nearest delivery tile given a search and all delivery tiles.
+ * Priority is given to operational delivery tiles, so if at least one is present, the nearest delivery tile is computed among them,
+ * otherwise it's computed through all delivery tiles.
  * @param {import("../utils/geometry.js").ShortestPaths | null} search
  * @param {Iterable<Point>} deliveries
  * @returns {{delivery: Point, distance: number} | null}
@@ -63,10 +70,11 @@ function nearestReachableDelivery(search, deliveries) {
 }
 
 /**
- * Computes the total reward that carried parcels are expected to retain at delivery.
+ * This function computes the total reward that carried parcels are expected to retain
+ * if the agent were to move to a delivery tile with the given distance.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
- * @returns {number} the expected carried reward at delivery
+ * @returns {number} the expected carried reward at a delivery tile with the given distance from it.
  */
 function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
     const decayPerMove = beliefs.world.decayPerMove();
@@ -83,7 +91,9 @@ function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
 }
 
 /**
- * Computes the utility of picking up the given parcel.
+ * This function computes the utility of picking up the given parcel.
+ * The utility is computed by using both the distance to the parcel and the distance to the nearest delivery tile.
+ * @todo Add formula in comments.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} pickupCost
  * @param {number} expectedNewParcelReward
@@ -97,7 +107,9 @@ function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward) {
 }
 
 /**
- * Computes the utility of delivering the carried parcels.
+ * This function computes the utility of delivering the carried parcels.
+ * The utility is computed by using the distance to the nearest delivery tile.
+ * @todo add formula in comments
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
  * @returns {number} the path-efficiency utility for delivering.
@@ -109,6 +121,8 @@ function deliverUtility(beliefs, distanceToDelivery) {
 }
 
 /**
+ * This function computes the utlity for the action of exploring, typically used when there's no other option.
+ * This utility is computed with the amount of moves since the last time a spawner was checked and the distance to reach it.
  * Spawners not observed recently gain priority over time, while BFS distance penalizes costly trips.
  * @param {number} movesSinceCheck
  * @param {number} pathDistance
@@ -119,7 +133,7 @@ function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
 }
 
 /**
- * Generates the current set of desires as plain objects, given the beliefs.
+ * This function generates the current set of desires as plain objects, given the beliefs.
  * Desires are ephemeral data, regenerated every cycle.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @returns {Desire[]} the generated desires.
