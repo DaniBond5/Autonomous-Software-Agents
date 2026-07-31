@@ -14,12 +14,13 @@
   "author": "",
   "type": "module",
   "scripts": {
-    "start": "node src/agent.js"
+    "start": "node src/agent.js",
+    "start:llm": "node src/llm-agent.js"
   },
   "dependencies": {
     "@unitn-asa/deliveroo-js-sdk": "^1.3.10",
     "@unitn-asa/pddl-client": "1.6.2",
-    "dotenv": "^17.4.2"
-  },
-  "devDependencies": {}
+    "dotenv": "^17.4.2",
+    "openai": "^4.104.0"
+  }
 }
