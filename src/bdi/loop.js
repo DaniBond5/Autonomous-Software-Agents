@@ -16,7 +16,7 @@ export const wait = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Runs the BDI control loop of one agent.
+ * This function runs the BDI control loop of one agent.
  * The loop lives here, and not in the entry point, so a second agent can run
  * the same cycle on its own beliefs and planner.
  * @param {import("./beliefs.js").Beliefs} beliefs
