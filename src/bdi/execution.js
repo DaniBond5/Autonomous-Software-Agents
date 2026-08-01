@@ -12,6 +12,13 @@ const dbg = (...args) => {
  * @property {*} [error] error raised by the SDK call
  */
 
+/**
+ * This function returns an object containing the full information regarding an action that has failed.
+ * The object will contain the status of the action (as failed), the action itself, a null result and the error given by the SDK.
+ * @param {import("./planning.js").Action | null} action 
+ * @param {*} error 
+ * @returns {Promise<ActionOutcome>} an object representing the SDK failure of an action.
+ */
 function sdkFailure(action, error) {
     const message = error instanceof Error ? error.message : String(error);
     dbg(`${action.action} failed: ${message}`);
@@ -19,7 +26,8 @@ function sdkFailure(action, error) {
 }
 
 /**
- * Movement and self-position synchronization remain one operation.
+ * This function executes the given action with a given agent's beliefs and the connection socket.
+ * Movement and self-position synchronization are done with one operation.
  * @param {import("./planning.js").Action | null} action
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {object} socket
