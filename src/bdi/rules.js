@@ -221,7 +221,8 @@ export class RuleStore {
         this.avoided = new Map();
 
         /**
-         * Temporary goals. Unlike the rules above these do expire: "go here and wait" has to end.
+         * The temporary goal, of which there is at most one: see injectDesire.
+         * Unlike the rules above it does expire, because "go here and wait" has to end.
          * @type {Map<string, {id: string, target: {x: number, y: number}, utility: number, expiresAt: number}>}
         */
         this.desires = new Map();
@@ -323,10 +324,15 @@ export class RuleStore {
     }
 
     /**
-     * This function registers a temporary goal, replacing any goal with the same id.
+     * This function registers a temporary goal, replacing whatever was held before.
      * @param {{id: string, x: number, y: number, seconds: number}} hold
     */
     injectDesire(hold) {
+        // An agent stands in one place, so two live holds are a contradiction rather than a
+        // choice to be arbitrated. Keeping both left the agent walking back to the older tile
+        // once the newer goal expired. The newest instruction is the one that counts, which is
+        // also how two scoring rules on the same axis are settled.
+        this.desires.clear();
         this.desires.set(hold.id, {
             id: hold.id,
             target: { x: hold.x, y: hold.y },

@@ -70,10 +70,15 @@ function resultForPath(path, terminal, intention, beliefs) {
         return { status: "wait", reason: "ordinary route temporarily blocked" };
     }
     if (path.length === 0) {
-        dbg(
-            `${intention.type}: reached (${me.x},${me.y})`
-            + (terminal ? `, next ${terminal.action}` : "")
-        );
+        // A hold plans the same arrival every cycle for as long as it lasts, and saying so each
+        // time buries the rest of the log. Waiting is what a hold is for, and the move that got
+        // the agent here was already logged.
+        if (intention.type !== "go_to_tile") {
+            dbg(
+                `${intention.type}: reached (${me.x},${me.y})`
+                + (terminal ? `, next ${terminal.action}` : "")
+            );
+        }
         return terminal
             ? { status: "action", action: terminal }
             : { status: "idle" };
