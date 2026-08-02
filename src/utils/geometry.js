@@ -18,6 +18,8 @@ const CARDINAL_DIRECTIONS = Object.freeze([
 /**
  * @typedef {Object} PathfindingOptions
  * @property {function({x: number, y: number}): boolean} [isBlocked]
+ * @property {boolean} [ignoreAvoided] cross tiles a mission forbade, used only by the retry
+ *           in desire generation when avoiding them leaves nothing reachable
  */
 
 /**
@@ -303,8 +305,17 @@ function getNeighbors(beliefs, position, options = {}) {
             y: position.y + dy
         };
 
+        // A tile a mission forbade is dropped here rather than in each caller, which is what
+        // makes the ban hold for every search in the codebase without any of them being
+        // changed. It is a hard exclusion and not a cost, because the search is uniform-cost
+        // breadth-first: a penalty would mean Dijkstra, to buy a decision the retry in desire
+        // generation already reaches.
+        const isAvoided = !options.ignoreAvoided
+            && beliefs.rules.isAvoided(neighbor);
+
         if (isMoveAllowed(beliefs, position, neighbor)
-            && !options.isBlocked?.(neighbor)) neighbors.push(neighbor);
+            && !options.isBlocked?.(neighbor)
+            && !isAvoided) neighbors.push(neighbor);
     }
     return neighbors;
 }

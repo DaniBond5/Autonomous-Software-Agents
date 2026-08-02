@@ -98,13 +98,18 @@ function resultForPath(path, terminal, intention, beliefs) {
 
 // Plan library, keyed by intention type. 
 // The planner is passed in so the table itself holds no agent state.
+// Walking to a tile and doing nothing on arrival serves two goals that differ only in where
+// the tile came from: an unchecked spawner, or a mission that named one. They share the plan.
+const navigateOnly = (planner, intention, beliefs) =>
+    planner.navigateThen(null, intention, beliefs);
+
 const planners = {
     go_pick_up: (planner, intention, beliefs) =>
         planner.navigateThen({ action: "pickup" }, intention, beliefs),
     go_deliver: (planner, intention, beliefs) =>
         planner.navigateThen({ action: "putdown" }, intention, beliefs),
-    go_to_spawner: (planner, intention, beliefs) =>
-        planner.navigateThen(null, intention, beliefs),
+    go_to_spawner: navigateOnly,
+    go_to_tile: navigateOnly,
 };
 
 /**

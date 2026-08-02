@@ -1,6 +1,7 @@
 import config from "../config.js";
 import { executeAction } from "../bdi/execution.js";
 import { wait } from "../bdi/loop.js";
+import { applyRule } from "../bdi/rules.js";
 import { describeState } from "./memory.js";
 
 const dbg = (...args) => {
@@ -83,6 +84,21 @@ function parseTile(input) {
 }
 
 /**
+ * Reads a tile and a duration, the input both waiting tools take.
+ * @param {string} input
+ * @returns {{x: number, y: number, seconds: number} | null}
+ */
+function parseHold(input) {
+    const numbers = String(input ?? "").match(/-?\d+/g);
+    if (!numbers || numbers.length < 3) return null;
+    return {
+        x: Number(numbers[0]),
+        y: Number(numbers[1]),
+        seconds: Number(numbers[2])
+    };
+}
+
+/**
  * The tools the model can call, and the only place they are described.
  * The system prompt is generated from this registry, so a new tool becomes
  * available to the model as soon as it is added here.
@@ -141,6 +157,60 @@ export class LLMExecutor {
                     return value === null
                         ? `cannot compute "${input}": only numbers, + - * / and parentheses are allowed`
                         : `${input} = ${value}`;
+                },
+            },
+            // The five tools below do not take the game over: they write a rule into the
+            // deliberation the agent already runs, and the agent keeps playing on its own with
+            // the rule in force. A mission that changes the rules of the game is therefore
+            // read it, register it, reply, resume_autonomous, and the agent plays on. That is
+            // the difference from a mission that is a list of moves, which the tools above do.
+            set_scoring_rule: {
+                description: "Change how rewards are scored, for a mission that holds for the "
+                    + "rest of the game. Input is one JSON object. The axes are stack_count "
+                    + '(fields equals, min, max), delivery_tile (fields x, y) and '
+                    + "parcel_value (fields minReward, maxReward). The effect is multiplier, "
+                    + "additive, or both. Registering the same id again replaces the rule. "
+                    + "Rules add up, so a mission usually needs more than one. For a mission "
+                    + "that pays for a stack of a given size, register the bonus at that size "
+                    + "and a reduction below it, or nothing will make you hold on to parcels "
+                    + "instead of delivering them one at a time. For stacks of three: "
+                    + '{"id":"stack3","axis":"stack_count","equals":3,"multiplier":2} and '
+                    + '{"id":"small","axis":"stack_count","max":2,"multiplier":0.3}. '
+                    + "To discourage something use a fraction, never 0: 0 means you can never "
+                    + "do it at all, and parcels you cannot deliver decay in your hands.",
+                run: input => this.registerRule(input),
+            },
+            avoid_tile: {
+                description: "Never walk through a tile again, for a mission that punishes "
+                    + 'stepping on one. Input is the tile, for example "4,7". The agent will '
+                    + "still cross it if that is the only way to reach anything at all.",
+                run: async input => {
+                    const tile = parseTile(input);
+                    if (!tile) return `cannot read "${input}" as a tile: write it as x,y`;
+                    this.beliefs.rules.avoidTile(tile);
+                    return `avoiding (${tile.x},${tile.y}) from now on`;
+                },
+            },
+            hold_at: {
+                description: "Go to a tile and wait there, then go back to playing. Input is "
+                    + 'the tile and the seconds to wait, for example "4,7 30". Use it for a '
+                    + "mission that asks you to be somewhere at a time.",
+                run: input => this.hold(input),
+            },
+            send_partner_to: {
+                description: "Ask the other agent to go to a tile and wait there, while you "
+                    + 'carry on. Same input as hold_at, for example "4,7 30". Use it for a '
+                    + "mission that asks both agents to meet.",
+                run: input => this.sendPartnerTo(input),
+            },
+            clear_rules: {
+                description: "Lift every rule registered so far and go back to ordinary "
+                    + "scoring. Takes no input. Use it when a mission is called off.",
+                run: async () => {
+                    const lifted = this.beliefs.rules.clear();
+                    return lifted === 0
+                        ? "there were no rules to lift"
+                        : `lifted ${lifted} rules: scoring is back to normal`;
                 },
             },
             reply: {
@@ -224,7 +294,7 @@ export class LLMExecutor {
         const target = parseTile(input);
         if (!target) return `cannot read "${input}" as a tile: write it as x,y`;
 
-        const intention = { type: "go_to_spawner", target, utility: 0 };
+        const intention = { type: "go_to_tile", target, utility: 0 };
         for (let step = 0; step < MAX_WALK_STEPS; step += 1) {
             const plan = await this.planner.planNextAction(intention, this.beliefs);
 
@@ -265,6 +335,64 @@ export class LLMExecutor {
         }
         return `${type === "pickup" ? "picked up" : "put down"} `
             + `${outcome.result.length} parcels at ${here}`;
+    }
+
+    /**
+     * Registers a scoring rule written by the model, and passes it to the partner.
+     * A rule of the game binds the team, but the mission was only sent to one of us.
+     * @param {string} input the rule as JSON
+     * @returns {Promise<string>}
+     */
+    async registerRule(input) {
+        let raw;
+        try {
+            raw = JSON.parse(String(input ?? ""));
+        } catch {
+            // A rejected tool call is a message the model can act on, so it says what a good
+            // one looks like rather than only that this one was bad.
+            return 'that is not JSON. Write one object, for example '
+                + '{"id":"stack3","axis":"stack_count","equals":3,"multiplier":2}';
+        }
+
+        const result = applyRule(this.beliefs.rules, raw);
+        if (!result.ok) return `rule refused: ${result.reason}`;
+
+        // What goes on the wire is the rule as written, not as stored: the partner puts it
+        // through the same validation this agent just did, and that reads the written shape.
+        this.beliefs.partner.sendRule(raw);
+        return `rule ${result.rule.id} is in force: ${result.summary}`;
+    }
+
+    /**
+     * Sends this agent to a tile for a while.
+     * @param {string} input tile and seconds
+     * @returns {Promise<string>}
+     */
+    async hold(input) {
+        const hold = parseHold(input);
+        if (!hold) return `cannot read "${input}": write it as x,y seconds`;
+
+        const result = applyRule(this.beliefs.rules, {
+            id: `hold ${hold.x},${hold.y}`,
+            ...hold
+        });
+        return result.ok ? result.summary : `cannot hold there: ${result.reason}`;
+    }
+
+    /**
+     * Sends the partner to a tile for a while. The name says partner, so nothing is
+     * registered here: this agent carries on with what it was doing.
+     * @param {string} input tile and seconds
+     * @returns {Promise<string>}
+     */
+    async sendPartnerTo(input) {
+        const hold = parseHold(input);
+        if (!hold) return `cannot read "${input}": write it as x,y seconds`;
+        if (!this.beliefs.partner.isKnown) return "there is no other agent to send";
+
+        this.beliefs.partner.sendRule({ id: `hold ${hold.x},${hold.y}`, ...hold });
+        return `asked the other agent to wait at (${hold.x},${hold.y}) `
+            + `for ${hold.seconds} seconds`;
     }
 
     /**
