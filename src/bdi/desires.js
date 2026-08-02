@@ -10,7 +10,7 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  * The terminal action (pickup / putdown / nothing) is defined with `type`.
  *
  * @typedef {Object} Desire
- * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'} type
+ * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'|'go_to_tile'} type
  * @property {Point}  target   - where to move
  * @property {number} utility  - score from the utility functions
  * @property {number} [distance] - current BFS distance from the agent to the target
@@ -81,10 +81,15 @@ function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
     let expectedReward = 0;
 
     for (const parcel of beliefs.parcels.carried.values()) {
-        expectedReward += Math.max(
+        const decayed = Math.max(
             0,
             parcel.reward - decayPerMove * distanceToDelivery
         );
+        // The one place a carried parcel is weighed against a value rule. Both utilities
+        // below reach this function, so applying the rule in either of them as well would
+        // square the multiplier.
+        const value = beliefs.rules.parcelValueEffect(parcel.reward);
+        expectedReward += Math.max(0, decayed * value.multiplier + value.additive);
     }
 
     return expectedReward;
@@ -97,11 +102,24 @@ function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} pickupCost
  * @param {number} expectedNewParcelReward
+ * @param {number} parcelReward the parcel's own reward, which is what a value rule is matched on
  * @returns {number} the path-efficiency utility for picking up the parcel.
  */
-function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward) {
+function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward, parcelReward) {
     const expectedCarriedReward = expectedCarriedRewardAtDelivery(beliefs, pickupCost);
-    const expectedTotalDeliveredReward = expectedCarriedReward + expectedNewParcelReward;
+    const value = beliefs.rules.parcelValueEffect(parcelReward);
+    const expectedNewReward = Math.max(
+        0,
+        expectedNewParcelReward * value.multiplier + value.additive
+    );
+
+    // The stack rule is weighed at the count the agent would be carrying with this parcel in
+    // hand, not the count it carries now. A bonus for stacks of three has to make the first and
+    // the second pickup worth more, and at the current count it never would: the agent would
+    // take one parcel, find the delivery already worth walking to, and deliver it alone.
+    const stack = beliefs.rules.stackEffect(beliefs.parcels.carried.size + 1);
+    const expectedTotalDeliveredReward =
+        (expectedCarriedReward + expectedNewReward) * stack.multiplier + stack.additive;
 
     return expectedTotalDeliveredReward / Math.max(1, pickupCost);
 }
@@ -112,12 +130,23 @@ function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward) {
  * @todo add formula in comments
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
+ * @param {Point} deliveryTile the tile being scored, since a rule can single one out
  * @returns {number} the path-efficiency utility for delivering.
  */
-function deliverUtility(beliefs, distanceToDelivery) {
+function deliverUtility(beliefs, distanceToDelivery, deliveryTile) {
     const expectedDeliveredReward = expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery);
 
-    return expectedDeliveredReward / Math.max(1, distanceToDelivery);
+    // Here the stack rule is weighed at the count actually in hand: this is the delivery that
+    // would happen now. Both effects land on the expected reward and not on the finished
+    // utility, because every utility here is a rate and scaling a rate would make desires of
+    // different types incomparable.
+    const stack = beliefs.rules.stackEffect(beliefs.parcels.carried.size);
+    const tile = beliefs.rules.deliveryTileEffect(deliveryTile);
+    const expectedRuledReward =
+        (expectedDeliveredReward * stack.multiplier + stack.additive)
+        * tile.multiplier + tile.additive;
+
+    return expectedRuledReward / Math.max(1, distanceToDelivery);
 }
 
 /**
@@ -136,12 +165,13 @@ function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
  * This function generates the current set of desires as plain objects, given the beliefs.
  * Desires are ephemeral data, regenerated every cycle.
  * @param {import("./beliefs.js").Beliefs} beliefs
+ * @param {boolean} [ignoreAvoided=false] set by the retry at the bottom of this function
  * @returns {Desire[]} the generated desires.
  */
-export function generateDesires(beliefs) {
+export function generateDesires(beliefs, ignoreAvoided = false) {
     const desires = [];
     const knownParcels = beliefs.parcels.availableKnown(beliefs.world.localDecayIntervalMs);
-    const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos);
+    const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos, { ignoreAvoided });
 
     for (const parcel of knownParcels) {
         const distanceToParcel = distanceFromSearch(agentPaths, parcel);
@@ -152,7 +182,7 @@ export function generateDesires(beliefs) {
         // desires and the other one keeps it. The check sits here because it needs the distance above.
         if (beliefs.partner.outbidsMeOn(parcel.id, distanceToParcel, beliefs.me.id)) continue;
 
-        const parcelPaths = shortestPathsFrom(beliefs, parcel);
+        const parcelPaths = shortestPathsFrom(beliefs, parcel, { ignoreAvoided });
         const delivery = nearestReachableDelivery(
             parcelPaths,
             beliefs.world.deliveries.values()
@@ -169,7 +199,8 @@ export function generateDesires(beliefs) {
         const utility = pickUpUtility(
             beliefs,
             pickupCost,
-            expectedNewParcelRewardAtDelivery
+            expectedNewParcelRewardAtDelivery,
+            parcel.reward
         );
         if (utility > 0) {
             desires.push({
@@ -188,7 +219,7 @@ export function generateDesires(beliefs) {
             const distanceToDelivery = distanceFromSearch(agentPaths, delivery);
             if (!Number.isFinite(distanceToDelivery)) continue;
 
-            const utility = deliverUtility(beliefs, distanceToDelivery);
+            const utility = deliverUtility(beliefs, distanceToDelivery, delivery);
             if (utility > 0) {
                 deliveryCandidates.push({
                     delivery,
@@ -235,6 +266,19 @@ export function generateDesires(beliefs) {
                 utility: spawnerExplorationUtility(movesSinceCheck, pathDistance),
             });
         }
+    }
+
+    // A goal a mission asked for. It is added outside the exploration branch above because it
+    // holds whatever else the agent has to do, and it competes on utility like anything else.
+    desires.push(...beliefs.rules.injectedDesires());
+
+    // An avoided tile is a hard exclusion in the search, and one tile in a corridor can cut the
+    // map in two and leave the agent with nothing reachable and nothing to want. Rather than
+    // stand still, plan the cycle again with the avoidance lifted: when the only route crosses
+    // the tile the agent crosses it, which is the call a soft penalty would arrive at anyway.
+    // One retry only, since the flag is set on the way in.
+    if (desires.length === 0 && !ignoreAvoided && beliefs.rules.hasAvoided) {
+        return generateDesires(beliefs, true);
     }
 
     return desires;

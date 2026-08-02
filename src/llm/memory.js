@@ -87,11 +87,16 @@ export class LLMMemory {
      */
     buildContext() {
         const recent = this.history.slice(-MAX_RECENT_EVENTS);
+        // The rules go in beside the state because they are part of it: without reading them
+        // back the model cannot tell a rule it already registered from one it still has to,
+        // and would register the same thing again under a new id every turn.
+        const rules = this.beliefs.rules.format();
         return [
             `Goal: ${this.goal}`,
             "",
             "Current state:",
             describeState(this.beliefs),
+            ...(rules ? ["", rules] : []),
             "",
             "What happened recently:",
             recent.map(event => `- ${event}`).join("\n") || "- nothing yet",

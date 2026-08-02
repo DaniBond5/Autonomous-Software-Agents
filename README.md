@@ -4,7 +4,9 @@ An autonomous agent that plays Deliveroo.js on the user's behalf, collecting and
 parcels. Built on a BDI (Belief-Desire-Intention) architecture with automated planning.
 
 **Course:** Autonomous Software Agents - University of Trento
+
 **Authors:** Sasha Petkovic (sasha.petkovic@studenti.unitn.it, 264689), Daniele Buondonno (daniele.buondonno@studenti.unitn.it, 267888)
+
 **Report:** 
 
 ---
@@ -29,27 +31,6 @@ invalidate halfway through.
 Routing normally uses breadth-first search over the walkable tiles, which is optimal on a
 uniform-cost grid. When movable crates block every ordinary route, the agent falls back to
 a PDDL planner that can reason about pushing them out of the way.
-
-## Two agents
-
-The repository holds two agents that can play at the same time as teammates: the BDI agent
-above, and an LLM-based agent that plays the same BDI cycle on its own beliefs but can also
-be given missions in plain language through the game chat.
-
-They run as two separate processes, so they cannot share memory and neither can be told the
-other's agent id in advance, since the server assigns it at connection time. They find each
-other by name instead: the server announces every agent that connects or disconnects, and
-each process watches those announcements for the name it was told to expect. This resolves
-in either starting order, and works with the two processes on two different machines.
-
-Once they know each other they exchange two kinds of belief over the chat channel. The
-first is parcels: each agent reports what it can see itself, which gives the other one
-sight beyond its own sensing radius. An agent never passes on what it was told, only what
-it saw, which is what keeps messages from echoing back and forth forever. The second is
-intentions: an agent announces the parcel it has committed to, together with its own path
-distance to it. Both agents then compare that distance against their own and the further
-one drops the parcel from its goals, so the closer agent collects it and the two do not
-walk to the same parcel.
 
 The reasoning behind each design decision, and the known limitations, are covered in the
 report.
@@ -165,6 +146,7 @@ Credentials live in `.env`. Everything else is in `src/config.js`:
     │   ├── intentions.js     # commitment to one goal, and when to give it up
     │   ├── planning.js       # Planner: routing, plan library, deferred goals
     │   ├── execution.js      # move, pickup and putdown on the socket, one action at a time
+    │   ├── rules.js          # RuleStore: the rules a mission put in force
     │   └── loop.js           # BDI control loop, shared by both agents
     ├── llm/
     │   ├── core.js           # Agent Core: holds the others together and runs one turn
