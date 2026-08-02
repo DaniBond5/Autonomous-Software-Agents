@@ -9,7 +9,7 @@ import { LLMMemory } from "./llm/memory.js";
 import { LLMPlanner } from "./llm/planner.js";
 import { LLMReplanner } from "./llm/replanner.js";
 import { LLMExecutor } from "./llm/executor.js";
-import { LLMAgent, DEFAULT_GOAL } from "./llm/llm-agent.js";
+import { LLMAgent, DEFAULT_GOAL } from "./llm/core.js";
 
 const socket = DjsConnect(
     config.deliveroo.host,
