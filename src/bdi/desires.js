@@ -147,6 +147,11 @@ export function generateDesires(beliefs) {
         const distanceToParcel = distanceFromSearch(agentPaths, parcel);
         if (!Number.isFinite(distanceToParcel)) continue;
 
+        // Leave a claimed parcel to the partner when the partner is closer to it. Yielding is symmetric:
+        // both agents weigh the same two distances, so exactly one of them drops the parcel from its
+        // desires and the other one keeps it. The check sits here because it needs the distance above.
+        if (beliefs.partner.outbidsMeOn(parcel.id, distanceToParcel, beliefs.me.id)) continue;
+
         const parcelPaths = shortestPathsFrom(beliefs, parcel);
         const delivery = nearestReachableDelivery(
             parcelPaths,

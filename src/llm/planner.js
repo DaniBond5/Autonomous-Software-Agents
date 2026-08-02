@@ -1,6 +1,6 @@
 import config from "../config.js";
 import { wait } from "../bdi/loop.js";
-import { buildSystemPrompt } from "./prompt.js";
+import { buildSystemPrompt } from "./executor.js";
 
 const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);

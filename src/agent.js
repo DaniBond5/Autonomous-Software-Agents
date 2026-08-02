@@ -16,7 +16,8 @@ async function main() {
     const beliefs = new Beliefs();
     const planner = new Planner();
 
-    beliefs.init(socket);
+    // The other agent is the LLM one, recognised by the name its token carries.
+    beliefs.init(socket, { partnerName: config.deliveroo.agents.llm.name });
     await runAgentLoop(beliefs, planner, socket);
 }
 

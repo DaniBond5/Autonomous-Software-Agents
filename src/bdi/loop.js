@@ -16,6 +16,15 @@ export const wait = (ms) =>
     new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
+ * The identity of an intention, or null when there is none.
+ * Having no goal is a state the partner has to hear about too, so the comparison has to survive it.
+ * @param {import("./desires.js").Desire | null} intention
+ * @returns {string | null}
+ */
+const intentionKey = (intention) =>
+    intention ? desireKey(intention) : null;
+
+/**
  * This function runs the BDI control loop of one agent.
  * The loop lives here, and not in the entry point, so a second agent can run
  * the same cycle on its own beliefs and planner.
@@ -37,6 +46,9 @@ export async function runAgentLoop(beliefs, planner, socket, isSuspended = () =>
             if (currentIntention) {
                 currentIntention = null;
                 planner.resetPlanningState("control handed over");
+                // The parcel this agent was walking to is free again. A claim left standing would
+                // make the partner keep away from a parcel nobody is going to collect.
+                beliefs.partner.announceIntention(null);
             }
             await wait(IDLE_WAIT_MS);
             continue;
@@ -57,12 +69,14 @@ export async function runAgentLoop(beliefs, planner, socket, isSuspended = () =>
             desires,
             deliveryCrateCommitmentActive
         );
+        const intentionChanged =
+            intentionKey(previousIntention) !== intentionKey(currentIntention);
+
         // One line per goal change, so the log tells apart a goal that was
         // outranked from one that left the desire set. The old utility comes
         // from the current desires: a value computed cycles ago is not
         // comparable with a fresh one, so a goal that is gone says so.
-        if (previousIntention && currentIntention
-            && desireKey(previousIntention) !== desireKey(currentIntention)) {
+        if (intentionChanged && previousIntention && currentIntention) {
             const left = desires.find(
                 desire => desireKey(desire) === desireKey(previousIntention)
             );
@@ -72,6 +86,14 @@ export async function runAgentLoop(beliefs, planner, socket, isSuspended = () =>
                 + `took ${desireKey(currentIntention)} `
                 + `(utility ${currentIntention.utility.toFixed(2)})`
             );
+        }
+
+        // The partner decides whether to go for a parcel by comparing its distance against ours,
+        // so it needs to hear about a commitment as soon as it is made.
+        // Releasing a claim rests on desire generation always offering at least an exploration
+        // option: were the intention null on two cycles running, no change would be seen here.
+        if (intentionChanged) {
+            beliefs.partner.announceIntention(currentIntention);
         }
 
         const planningResult = await planner.planNextAction(
