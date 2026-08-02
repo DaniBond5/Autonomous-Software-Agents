@@ -270,6 +270,44 @@ class Parcels {
     }
 
     /**
+     * This function adds parcels reported by the partner to the known map.
+     * It is what lets an agent know about parcels lying outside its own sensing range.
+     * An existing entry is never overwritten: the two agents share no clock, so there is no way to tell
+     * whether a report is fresher than what we saw ourselves, and a first-hand observation is the better bet.
+     * A wrong report costs nothing and repairs itself through the machinery that is already here:
+     * `availableKnown` re-estimates the reward from `observedAt` and forgets the parcel once it decays to zero,
+     * and `update` forgets it as soon as the reported position is observed without it.
+     * @param {{id: string, x: number, y: number, reward: number}[]} reported
+    */
+    mergeReported(reported) {
+        const observedAt = Date.now();
+
+        for (const parcel of reported) {
+            if (!parcel
+                || typeof parcel.id !== 'string'
+                || !isFinitePosition(parcel)
+                || !Number.isFinite(parcel.reward)
+                || parcel.reward <= 0) {
+                continue;
+            }
+
+            if (this.known.has(parcel.id)
+                || this.visible.has(parcel.id)
+                || this.carried.has(parcel.id)) {
+                continue;
+            }
+
+            this.known.set(parcel.id, {
+                id: parcel.id,
+                x: parcel.x,
+                y: parcel.y,
+                reward: parcel.reward,
+                observedAt
+            });
+        }
+    }
+
+    /**
      * This function returns known parcels with their reward estimated using the current time and the parcel decay interval.
      * Parcels whose estimated reward is not positive are forgotten.
      * @param {number} localDecayIntervalMs local decay interval in milliseconds
@@ -483,6 +521,180 @@ class Agents {
                 && position.y <= Math.ceil(agent.y)) return true;
         }
         return false;
+    }
+}
+
+/**
+ * Version carried by every message the two agents exchange.
+ * It costs one field and means a later protocol can be told apart from this one instead of guessed at.
+*/
+const PROTOCOL_VERSION = 1;
+
+/**
+ * This class represents what the agent believes about its teammate: who it is, and which parcel it has committed to.
+ * Everything the two agents exchange is a belief, so the partner sits here beside the other belief components
+ * and is revised in the same place as sensing.
+ * It also owns the sending side of the protocol, because a belief about the partner is the only thing worth sending it.
+*/
+class Partner {
+    constructor() {
+        /**
+         * The name the partner's token was created with, or null when the agent runs alone.
+         * @type {string | null}
+        */
+        this.name = null;
+
+        /**
+         * The partner's agent id, assigned by the server and resolved from connection events, or null while unknown.
+         * @type {string | null}
+        */
+        this.id = null;
+
+        /**
+         * The parcel the partner declared it is going for, with its distance to it, or null when it claims nothing.
+         * @type {{parcelId: string, distance: number} | null}
+        */
+        this.claim = null;
+
+        /**
+         * The parcel this agent has declared to the partner. Kept so the claim can be repeated
+         * to a partner that connected after it was made.
+         * @type {{parcelId: string, distance: number} | null}
+        */
+        this.myClaim = null;
+
+        /**
+         * The parcel ids of the last report sent, or null when nothing has been sent yet.
+         * @type {string | null}
+        */
+        this.sharedParcelIds = null;
+
+        /**
+         * @type {object | null}
+        */
+        this.socket = null;
+    }
+
+    /**
+     * @returns {boolean} true when the partner's id has been resolved.
+    */
+    get isKnown() {
+        return this.id !== null;
+    }
+
+    /**
+     * This function records the partner's id once a connection event has identified it.
+     * @param {string} id
+    */
+    connected(id) {
+        this.id = id;
+        console.log(`[partner] ${this.name} is agent ${id}`);
+
+        // The partner missed whatever was said before it arrived. Forgetting the last report makes
+        // the next sensing send one, and a claim already made is repeated here, so starting order does not matter.
+        this.sharedParcelIds = null;
+        if (this.myClaim) this.send({ kind: 'claim', ...this.myClaim });
+    }
+
+    /**
+     * This function forgets the partner when it leaves the game.
+    */
+    disconnected() {
+        console.log(`[partner] ${this.name} disconnected`);
+        this.id = null;
+
+        // A claim by an agent that is gone would keep a parcel reserved for nobody.
+        this.claim = null;
+    }
+
+    /**
+     * This function records what the partner declared. A claim for no parcel is a release.
+     * @param {{parcelId: string, distance: number} | null} claim
+    */
+    setClaim(claim) {
+        this.claim = claim;
+        console.log(
+            claim
+                ? `[partner] claims parcel ${claim.parcelId} at distance ${claim.distance}`
+                : "[partner] claims nothing"
+        );
+    }
+
+    /**
+     * This function sends the parcels the agent can see at this moment.
+     * Only first-hand observations are ever sent: what the partner reported is never passed back.
+     * That single rule is what keeps the protocol free of echo loops without message ids, hop counters or expiry times.
+     * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} parcels
+    */
+    shareParcels(parcels) {
+        if (!this.isKnown) return;
+
+        const parcelIds = parcels.map(parcel => parcel.id).sort().join(",");
+        // Sensing fires many times a second. The set of parcels is the only part worth resending:
+        // rewards decay predictably and the receiver re-estimates them from the time of the report,
+        // so a reward that changed on its own is not news and would only flood the chat.
+        if (parcelIds === this.sharedParcelIds) return;
+        this.sharedParcelIds = parcelIds;
+
+        this.send({
+            kind: 'parcels',
+            parcels: parcels.map(({ id, x, y, reward }) => ({ id, x, y, reward }))
+        });
+    }
+
+    /**
+     * This function tells the partner which parcel the agent has committed to.
+     * Only a pickup is a claim: delivering and exploring contend for nothing, so those and a missing
+     * intention release the previous claim instead.
+     * @param {import("./desires.js").Desire | null} intention
+    */
+    announceIntention(intention) {
+        const isClaim = intention?.type === 'go_pick_up'
+            && typeof intention.id === 'string'
+            && Number.isFinite(intention.distance);
+        const claim = isClaim
+            ? { parcelId: intention.id, distance: intention.distance }
+            : null;
+
+        // Only the parcel is compared, not the distance. The distance shrinks with every step towards
+        // the parcel, and resending that would be constant chatter to say something the partner can assume.
+        if ((claim?.parcelId ?? null) === (this.myClaim?.parcelId ?? null)) return;
+        this.myClaim = claim;
+
+        this.send({
+            kind: 'claim',
+            parcelId: claim?.parcelId ?? null,
+            distance: claim?.distance ?? null
+        });
+    }
+
+    /**
+     * This function checks whether a parcel should be left to the partner.
+     * Both agents run this same comparison over the same two numbers, so exactly one of them yields.
+     * The distances are BFS path lengths rather than straight lines, so the answer stays right
+     * when a wall stands between the two agents and the parcel.
+     * @param {string} parcelId
+     * @param {number} myDistance the agent's own BFS distance to the parcel
+     * @param {string} myId
+     * @returns {boolean} true if the partner is closer and the parcel is its to take.
+    */
+    outbidsMeOn(parcelId, myDistance, myId) {
+        if (this.claim?.parcelId !== parcelId) return false;
+        if (this.claim.distance !== myDistance) return this.claim.distance < myDistance;
+
+        // A tie has to break the same way on both sides. Without this, either both agents yield and
+        // nobody collects the parcel, or neither does and both walk to it. Any total order on the ids works.
+        return this.id < myId;
+    }
+
+    /**
+     * This function sends one protocol message. It is internal to the class and does nothing while
+     * the partner is unknown, which is also the case when the agent runs alone.
+     * @param {{kind: string}} payload
+    */
+    send(payload) {
+        if (!this.isKnown) return;
+        this.socket.emitSay(this.id, { v: PROTOCOL_VERSION, ...payload });
     }
 }
 
@@ -705,9 +917,17 @@ export class Beliefs {
         this.crates = new Crates();
         this.agents = new Agents();
         this.world = new World();
+        this.partner = new Partner();
     }
 
-    init(socket) {
+    /**
+     * @param {object} socket
+     * @param {{partnerName?: string | null}} [options] the name of the other agent, when there is one.
+    */
+    init(socket, { partnerName = null } = {}) {
+        this.partner.name = partnerName;
+        this.partner.socket = socket;
+
         socket.onYou((payload) => {
             this.me.update(payload);
         });
@@ -726,6 +946,72 @@ export class Beliefs {
             );
             this.agents.update(sensing.agents ?? []);
             this.world.markVisibleSpawners();
+
+            // Only what this agent sees for itself, never what the partner reported. See Partner.shareParcels.
+            this.partner.shareParcels(
+                [...this.parcels.visible.values()].filter(
+                    parcel => !parcel.carriedBy && parcel.reward > 0
+                )
+            );
+        });
+
+        // The partner's id is assigned by the server, so it cannot be agreed in advance or shared between
+        // two processes. The server sends one of these events for every agent already connected and then
+        // one per connection and disconnection, which resolves the id whichever agent starts first.
+        socket.onAgentConnected((status, agent) => {
+            if (!this.partner.name || agent?.name !== this.partner.name) return;
+
+            // Our own event carries our own name back to us. It can arrive before `you`, and then me.id is
+            // still empty and this does not fire: sharing a name with the partner is a misconfiguration,
+            // and the warning below reports it.
+            if (agent.id === this.me.id) return;
+
+            if (status === 'connected') {
+                if (this.partner.isKnown && this.partner.id !== agent.id) {
+                    console.warn(
+                        `[partner] two agents answer to ${agent.name}: keeping ${this.partner.id}, `
+                        + `ignoring ${agent.id}. Check BDI_NAME and LLM_NAME`
+                    );
+                    return;
+                }
+                this.partner.connected(agent.id);
+                return;
+            }
+
+            if (status === 'disconnected' && this.partner.id === agent.id) {
+                this.partner.disconnected();
+            }
+        });
+
+        // Chat carries both partner messages and whatever a human types, so a message is only revised into
+        // a belief when it comes from the partner and is a protocol message this version understands.
+        // The routing stays here rather than inside Partner: this class coordinates and delegates, and this
+        // way Partner does not need to know that Parcels exists.
+        socket.onMsg((senderId, _senderName, message) => {
+            if (!this.partner.isKnown
+                || senderId !== this.partner.id
+                || message?.v !== PROTOCOL_VERSION) {
+                return;
+            }
+
+            if (message.kind === 'parcels' && Array.isArray(message.parcels)) {
+                this.parcels.mergeReported(message.parcels);
+                return;
+            }
+
+            // A claim for no parcel is the release, so no third kind of message is needed.
+            // Anything else is malformed and is dropped rather than acted on.
+            if (message.kind === 'claim') {
+                if (message.parcelId === null) {
+                    this.partner.setClaim(null);
+                } else if (typeof message.parcelId === 'string'
+                    && Number.isFinite(message.distance)) {
+                    this.partner.setClaim({
+                        parcelId: message.parcelId,
+                        distance: message.distance
+                    });
+                }
+            }
         });
 
         socket.onConfig((config) => {

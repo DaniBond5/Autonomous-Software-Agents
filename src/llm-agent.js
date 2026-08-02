@@ -29,6 +29,19 @@ function messageText(message) {
 }
 
 /**
+ * Whether a message is one of the two agents talking to each other.
+ * Beliefs handles those, and reading one here would turn a parcel report into a goal.
+ * @param {*} message
+ * @returns {boolean}
+ */
+function isProtocolMessage(message) {
+    return typeof message === "object"
+        && message !== null
+        && typeof message.kind === "string"
+        && Number.isFinite(message.v);
+}
+
+/**
  * Whether a message may set a goal. With no filter configured anyone can,
  * which is what a real game needs; during a test the filter keeps the agent
  * from reacting to the chat of every other player.
@@ -46,7 +59,8 @@ async function main() {
     // Part A machinery without sharing state with the BDI agent.
     const beliefs = new Beliefs();
     const planner = new Planner();
-    beliefs.init(socket);
+    // The other agent is the BDI one, recognised by the name its token carries.
+    beliefs.init(socket, { partnerName: config.deliveroo.agents.bdi.name });
 
     const memory = new LLMMemory(beliefs);
     const executor = new LLMExecutor({ beliefs, planner, socket, memory });
@@ -64,6 +78,10 @@ async function main() {
     };
 
     socket.onMsg((id, name, message) => {
+        // The partner talks on this same channel. The sender check is the point, the shape check
+        // covers the window before a connection event has resolved the partner's id.
+        if (id === beliefs.partner.id || isProtocolMessage(message)) return;
+
         const text = messageText(message);
         if (!text) return;
         if (!isMissionSender(id, name)) return;

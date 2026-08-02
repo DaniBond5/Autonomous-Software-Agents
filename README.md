@@ -19,16 +19,37 @@ invalidate halfway through.
 
 | Stage of the cycle | Where it lives |
 |---|---|
-| Beliefs — own state, parcels, other agents, crates, map | `src/bdi/beliefs.js` |
+| Beliefs — own state, parcels, other agents, crates, map, partner | `src/bdi/beliefs.js` |
 | Desires — candidate goals, each scored by a utility | `src/bdi/desires.js` |
 | Intention — commitment to one goal, and its revision | `src/bdi/intentions.js` |
 | Plan — route to the goal, plus the plan library | `src/bdi/planning.js` |
 | Execution — move, pickup and putdown on the socket | `src/bdi/execution.js` |
-| Control loop — wires the stages together | `src/agent.js` |
+| Control loop — wires the stages together | `src/bdi/loop.js` |
 
 Routing normally uses breadth-first search over the walkable tiles, which is optimal on a
 uniform-cost grid. When movable crates block every ordinary route, the agent falls back to
 a PDDL planner that can reason about pushing them out of the way.
+
+## Two agents
+
+The repository holds two agents that can play at the same time as teammates: the BDI agent
+above, and an LLM-based agent that plays the same BDI cycle on its own beliefs but can also
+be given missions in plain language through the game chat.
+
+They run as two separate processes, so they cannot share memory and neither can be told the
+other's agent id in advance, since the server assigns it at connection time. They find each
+other by name instead: the server announces every agent that connects or disconnects, and
+each process watches those announcements for the name it was told to expect. This resolves
+in either starting order, and works with the two processes on two different machines.
+
+Once they know each other they exchange two kinds of belief over the chat channel. The
+first is parcels: each agent reports what it can see itself, which gives the other one
+sight beyond its own sensing radius. An agent never passes on what it was told, only what
+it saw, which is what keeps messages from echoing back and forth forever. The second is
+intentions: an agent announces the parcel it has committed to, together with its own path
+distance to it. Both agents then compare that distance against their own and the further
+one drops the parcel from its goals, so the closer agent collects it and the two do not
+walk to the same parcel.
 
 The reasoning behind each design decision, and the known limitations, are covered in the
 report.
@@ -39,7 +60,7 @@ report.
 
 - Node.js 18 or newer, and npm
 - A running Deliveroo.js server
-- A Deliveroo.js agent token
+- One Deliveroo.js agent token per agent, each under a different name
 - Internet access, for the online PDDL solver
 
 ## Setup
@@ -78,10 +99,17 @@ Then fill it in:
 ```env
 HOST=http://localhost:8080
 TOKEN=your_agent_token
+BDI_NAME=
 LLM_TOKEN=
+LLM_NAME=
 ```
 
-`LLM_TOKEN` is reserved for the LLM-based agent and can be left empty.
+Everything below `TOKEN` concerns the second agent and can be left empty to run the BDI
+agent alone.
+
+`BDI_NAME` and `LLM_NAME` are the names the two tokens were created with. They have to
+differ from each other: they are how each agent recognises the other among the connected
+players. Leaving them empty is a supported setting and means the agent plays alone.
 
 `.env` is ignored by git and must not be committed.
 
@@ -93,6 +121,20 @@ npm start
 
 Open the server address in a browser with the same token to watch the agent play from its
 own point of view.
+
+To run both agents, get a second token under a second name, fill in all five settings, and
+start one agent per terminal:
+
+```bash
+npm start        # first terminal, the BDI agent
+npm run start:llm  # second terminal, the LLM agent
+```
+
+The order does not matter, and the two terminals do not have to be on the same machine as
+long as both reach the same server. Each process logs the line `[partner] <name> is agent
+<id>` once it has recognised the other. Without that line the two are playing next to each
+other rather than together, and the usual cause is a name that does not match the one the
+token was created with.
 
 ## Configuration
 
@@ -114,14 +156,23 @@ Credentials live in `.env`. Everything else is in `src/config.js`:
 ├── package-lock.json         # pinned dependency versions, so installs are reproducible
 ├── README.md                 # this file
 └── src/
-    ├── agent.js              # BDI control loop: senses, deliberates, plans, acts
+    ├── agent.js              # entry point of the BDI agent
+    ├── llm-agent.js          # entry point of the LLM agent, and its chat handler
     ├── config.js             # runtime settings; credentials are read from .env
     ├── bdi/
-    │   ├── beliefs.js        # world model: Me, Parcels, Agents, Crates, World
-    │   ├── desires.js        # candidate goals and the utility that scores them
+    │   ├── beliefs.js        # world model: Me, Parcels, Agents, Crates, World, Partner
+    │   ├── desires.js        # candidate goals, their utility, and parcels yielded to the partner
     │   ├── intentions.js     # commitment to one goal, and when to give it up
     │   ├── planning.js       # Planner: routing, plan library, deferred goals
-    │   └── execution.js      # move, pickup and putdown on the socket
+    │   ├── execution.js      # move, pickup and putdown on the socket, one action at a time
+    │   └── loop.js           # BDI control loop, shared by both agents
+    ├── llm/
+    │   ├── core.js           # Agent Core: holds the others together and runs one turn
+    │   ├── memory.js         # LLM-memory: the objective and the observations
+    │   ├── planner.js        # LLM-Planner: turns the objective into an action
+    │   ├── replanner.js      # LLM-Replanner: decides when the plan needs revisiting
+    │   ├── executor.js       # Tools: the registry, and the prompt that describes it
+    │   └── client.js         # access to the model, so the provider is a config value
     ├── pddl/
     │   ├── crate-planner.js  # CratePlanner: PDDL routes around movable crates
     │   └── crates-domain.pddl # PDDL domain: actions for moving and pushing
@@ -136,3 +187,4 @@ Credentials live in `.env`. Everything else is in `src/config.js`:
 | `@unitn-asa/deliveroo-js-sdk` | `^1.3.10` | Connection and actions |
 | `@unitn-asa/pddl-client` | `1.6.2` | Online PDDL solver |
 | `dotenv` | `^17.4.2` | Loading `.env` |
+| `openai` | `^4.104.0` | Client for the OpenAI-compatible endpoint used by the LLM agent |
