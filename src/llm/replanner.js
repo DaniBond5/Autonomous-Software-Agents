@@ -19,11 +19,13 @@ export class LLMReplanner {
      * @param {import("./memory.js").LLMMemory} memory
      * @param {import("./planner.js").LLMPlanner} planner
      * @param {import("./executor.js").LLMExecutor} executor
+     * @returns {Promise<import("./planner.js").TurnOutcome>} how the turn ended, so the
+     *          caller counts a replanned turn the same as any other.
      */
     async replan(memory, planner, executor) {
         const reason = `the world changed: now carrying ${memory.snapshot.carried} parcels`;
         console.log(`[llm] replanning, ${reason}`);
         memory.remember(`replanning because ${reason}`);
-        await planner.runTurn(memory, executor);
+        return planner.runTurn(memory, executor);
     }
 }

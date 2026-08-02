@@ -33,6 +33,13 @@ const FINAL_ANSWER = /^[ \t]*Final Answer[ \t]*:[ \t]*([\s\S]*)$/m;
  */
 
 /**
+ * How a turn ended. "acted" ran tools, "answered" means the model called nothing and
+ * declared itself finished, "unreachable" means the endpoint never replied, "aborted"
+ * means a new goal arrived.
+ * @typedef {'acted'|'answered'|'unreachable'|'aborted'} TurnOutcome
+ */
+
+/**
  * Reads the next step out of a reply.
  * An action wins over a final answer when both are present: the model cannot
  * know how the tool went before running it, so an answer written next to a
@@ -96,8 +103,11 @@ export class LLMPlanner {
 
     /**
      * Runs one turn on the current goal.
+     * The way a turn ended is returned rather than logged and forgotten, because a mission
+     * that never finishes is ended by counting these: see the caller in core.js.
      * @param {import("./memory.js").LLMMemory} memory
      * @param {import("./executor.js").LLMExecutor} executor
+     * @returns {Promise<TurnOutcome>}
      */
     async runTurn(memory, executor) {
         this.aborted = false;
@@ -108,12 +118,12 @@ export class LLMPlanner {
 
         for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
             for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-                if (this.aborted) return;
+                if (this.aborted) return "aborted";
 
                 const answer = await this.ask(messages);
                 if (answer === null) {
                     console.warn("[llm] turn ended: the model could not be reached");
-                    return;
+                    return "unreachable";
                 }
                 messages.push({ role: "assistant", content: answer });
 
@@ -126,7 +136,7 @@ export class LLMPlanner {
                 if (step.action === null) {
                     dbg(`final answer: ${step.answer}`);
                     memory.remember(`concluded: ${step.answer}`);
-                    return;
+                    return "answered";
                 }
 
                 const observation = await executor.run(step.action, step.input);
@@ -138,9 +148,10 @@ export class LLMPlanner {
                 messages.push({ role: "user", content: `Observation: ${observation}` });
                 // A tool can end the mission, and then there is nothing left to
                 // plan: the BDI loop is already taking over.
-                if (!executor.onMission) return;
+                if (!executor.onMission) return "acted";
                 break;
             }
         }
+        return "acted";
     }
 }
