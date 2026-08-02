@@ -33,7 +33,7 @@ function sdkFailure(action, error) {
  * @param {object} socket
  * @returns {Promise<ActionOutcome>}
  */
-export async function executeAction(action, beliefs, socket) {
+async function performAction(action, beliefs, socket) {
     if (!action) return { status: 'idle', action: null, result: null };
 
     switch (action.action) {
@@ -85,4 +85,39 @@ export async function executeAction(action, beliefs, socket) {
         default:
             return { status: 'failed', action, result: null };
     }
+}
+
+/**
+ * Tail of the queue below. It is deliberately a promise that never rejects:
+ * a failed action must not poison every call made after it.
+ * @type {Promise<void>}
+ */
+let pendingActions = Promise.resolve();
+
+/**
+ * Runs one action, waiting for the previous one to finish first.
+ *
+ * The server wraps each agent's actions in a mutex, and charges a penalty for
+ * every action sent while the previous one is still running. Enough penalty
+ * disconnects the agent and removes it from the grid. The agent has two callers
+ * that act on the same socket, the BDI loop and the LLM tools, and they can
+ * overlap while control is being handed over, so queueing here makes the
+ * invariant automatic instead of something each caller has to remember.
+ *
+ * The queue is module state, which is agent state too: one process controls one
+ * agent, so there is nothing to keep apart.
+ *
+ * The idle case is queued like any other. It waits on nothing meaningful, and
+ * one path is simpler than a special case.
+ * @param {import("./planning.js").Action | null} action
+ * @param {import("./beliefs.js").Beliefs} beliefs
+ * @param {object} socket
+ * @returns {Promise<ActionOutcome>}
+ */
+export function executeAction(action, beliefs, socket) {
+    const outcome = pendingActions.then(
+        () => performAction(action, beliefs, socket)
+    );
+    pendingActions = outcome.then(() => undefined, () => undefined);
+    return outcome;
 }
