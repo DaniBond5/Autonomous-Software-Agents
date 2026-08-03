@@ -4,8 +4,10 @@ import { BFS, findCrateCorridor } from "../utils/geometry.js";
 import { CratePlanner } from "../pddl/crate-planner.js";
 import { POSITION_KEY } from "./beliefs.js";
 
-const dbg = (...args) => {
-    if (config.debug) console.log("[agent]", ...args);
+// Both agents plan with this same code in one process, so every line says which of the two
+// wrote it. The name comes from the token and is not known until the server sends it.
+const dbg = (beliefs, ...args) => {
+    if (config.debug) console.log(`[${beliefs.me.name || "agent"}]`, ...args);
 };
 
 /**
@@ -75,6 +77,7 @@ function resultForPath(path, terminal, intention, beliefs) {
         // the agent here was already logged.
         if (intention.type !== "go_to_tile") {
             dbg(
+                beliefs,
                 `${intention.type}: reached (${me.x},${me.y})`
                 + (terminal ? `, next ${terminal.action}` : "")
             );
@@ -87,6 +90,7 @@ function resultForPath(path, terminal, intention, beliefs) {
     const dir = stepDir(me, path[0]);
     if (dir == null) return { status: "wait", reason: "invalid next path step" };
     dbg(
+        beliefs,
         `${intention.type}: move ${dir} to (${path[0].x},${path[0].y}), `
         + `target (${intention.target.x},${intention.target.y}), remaining ${path.length}`
     );
@@ -269,7 +273,8 @@ export class Planner {
 
         this.deferIntention(key, durationMs);
         console.warn(
-            `[agent] target deferred for ${durationMs} ms: persistent agent blocking`
+            `[${beliefs.me.name || "agent"}] target deferred for ${durationMs} ms: `
+            + "persistent agent blocking"
         );
         this.resetPlanningState("persistent agent blocking");
         return { status: "deferred", reason: "persistent agent blocking" };
@@ -552,7 +557,9 @@ export class Planner {
 
         const handler = planners[intention.type];
         if (!handler) {
-            console.warn(`[agent] unsupported intention: ${intention.type}`);
+            console.warn(
+                `[${beliefs.me.name || "agent"}] unsupported intention: ${intention.type}`
+            );
             this.resetPlanningState("unknown intention type");
             return { status: "unreachable", reason: "unknown intention type" };
         }
@@ -591,7 +598,7 @@ export class Planner {
         const durationMs = beliefs.world.blockingAgentWaitMs();
         this.deferIntention(action.intentionKey, durationMs);
         console.warn(
-            `[agent] target deferred for ${durationMs} ms: `
+            `[${beliefs.me.name || "agent"}] target deferred for ${durationMs} ms: `
             + "repeated BFS move failures"
         );
         this.resetPlanningState("repeated BFS move failures");

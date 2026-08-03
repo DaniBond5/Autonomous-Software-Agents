@@ -8,8 +8,10 @@ import { executeAction } from "./execution.js";
 // shorter just burns cycles re-planning an unchanged world.
 const IDLE_WAIT_MS = 200;
 
-const dbg = (...args) => {
-    if (config.debug) console.log("[agent]", ...args);
+// Both agents run this same loop in one process, so every line says which of the two wrote
+// it. The name comes from the token and is not known until the server sends it.
+const dbg = (beliefs, ...args) => {
+    if (config.debug) console.log(`[${beliefs.me.name || "agent"}]`, ...args);
 };
 
 export const wait = (ms) =>
@@ -37,7 +39,7 @@ const intentionKey = (intention) =>
 export async function runAgentLoop(beliefs, planner, socket, isSuspended = () => false) {
     let currentIntention = null;
 
-    console.log("[agent] loop started");
+    console.log(`[${beliefs.me.name || "agent"}] loop started`);
 
     while (true) {
         if (isSuspended()) {
@@ -81,6 +83,7 @@ export async function runAgentLoop(beliefs, planner, socket, isSuspended = () =>
                 desire => desireKey(desire) === desireKey(previousIntention)
             );
             dbg(
+                beliefs,
                 `intention changed: left ${desireKey(previousIntention)} `
                 + `(utility ${left ? left.utility.toFixed(2) : "gone"}), `
                 + `took ${desireKey(currentIntention)} `

@@ -1,7 +1,9 @@
 import config from "../config.js";
 
-const dbg = (...args) => {
-    if (config.debug) console.log("[agent]", ...args);
+// Both agents run this same code in one process, so every line says which of the two wrote
+// it. The name comes from the token and is not known until the server sends it.
+const dbg = (beliefs, ...args) => {
+    if (config.debug) console.log(`[${beliefs.me.name || "agent"}]`, ...args);
 };
 
 /**
@@ -17,11 +19,12 @@ const dbg = (...args) => {
  * The object will contain the status of the action (as failed), the action itself, a null result and the error given by the SDK.
  * @param {import("./planning.js").Action | null} action 
  * @param {*} error 
+ * @param {import("./beliefs.js").Beliefs} beliefs
  * @returns {Promise<ActionOutcome>} an object representing the SDK failure of an action.
  */
-function sdkFailure(action, error) {
+function sdkFailure(action, error, beliefs) {
     const message = error instanceof Error ? error.message : String(error);
-    dbg(`${action.action} failed: ${message}`);
+    dbg(beliefs, `${action.action} failed: ${message}`);
     return { status: 'failed', action, result: null, error };
 }
 
@@ -43,10 +46,10 @@ async function performAction(action, beliefs, socket) {
                 result = await socket.emitMove(action.dir);
             }
             catch (error) {
-                return sdkFailure(action, error);
+                return sdkFailure(action, error, beliefs);
             }
             if (result === false) {
-                dbg(`move ${action.dir} failed: blocked`);
+                dbg(beliefs, `move ${action.dir} failed: blocked`);
                 return { status: 'failed', action, result };
             }
             beliefs.me.applyMovement(result);
@@ -58,13 +61,13 @@ async function performAction(action, beliefs, socket) {
                 result = await socket.emitPickup();
             }
             catch (error) {
-                return sdkFailure(action, error);
+                return sdkFailure(action, error, beliefs);
             }
             if (!Array.isArray(result) || result.length === 0) {
-                dbg('pickup failed: no parcels');
+                dbg(beliefs, 'pickup failed: no parcels');
                 return { status: 'failed', action, result };
             }
-            dbg('pickup succeeded');
+            dbg(beliefs, 'pickup succeeded');
             return { status: 'succeeded', action, result };
         }
         case 'putdown': {
@@ -73,13 +76,13 @@ async function performAction(action, beliefs, socket) {
                 result = await socket.emitPutdown();
             }
             catch (error) {
-                return sdkFailure(action, error);
+                return sdkFailure(action, error, beliefs);
             }
             if (!Array.isArray(result) || result.length === 0) {
-                dbg('putdown failed: no parcels');
+                dbg(beliefs, 'putdown failed: no parcels');
                 return { status: 'failed', action, result };
             }
-            dbg('putdown succeeded');
+            dbg(beliefs, 'putdown succeeded');
             return { status: 'succeeded', action, result };
         }
         default:
