@@ -91,36 +91,29 @@ async function performAction(action, beliefs, socket) {
 }
 
 /**
- * Tail of the queue below. It is deliberately a promise that never rejects:
- * a failed action must not poison every call made after it.
- * @type {Promise<void>}
+ * Each socket has its own action queue.
+ * An action waits only for the previous action sent through the same socket.
+ * The stored queue never rejects, so one failed action cannot block later actions.
+ * @type {WeakMap<object, Promise<void>>}
  */
-let pendingActions = Promise.resolve();
+const actionQueues = new WeakMap();
 
 /**
- * Runs one action, waiting for the previous one to finish first.
- *
- * The server wraps each agent's actions in a mutex, and charges a penalty for
- * every action sent while the previous one is still running. Enough penalty
- * disconnects the agent and removes it from the grid. The agent has two callers
- * that act on the same socket, the BDI loop and the LLM tools, and they can
- * overlap while control is being handed over, so queueing here makes the
- * invariant automatic instead of something each caller has to remember.
- *
- * The queue is module state, which is agent state too: one process controls one
- * agent, so there is nothing to keep apart.
- *
- * The idle case is queued like any other. It waits on nothing meaningful, and
- * one path is simpler than a special case.
+ * Runs one action after earlier work on the same socket has finished.
+ * The returned promise keeps the action outcome visible to the caller.
  * @param {import("./planning.js").Action | null} action
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {object} socket
  * @returns {Promise<ActionOutcome>}
  */
 export function executeAction(action, beliefs, socket) {
-    const outcome = pendingActions.then(
+    const previous = actionQueues.get(socket) ?? Promise.resolve();
+    const outcome = previous.then(
         () => performAction(action, beliefs, socket)
     );
-    pendingActions = outcome.then(() => undefined, () => undefined);
+    actionQueues.set(
+        socket,
+        outcome.then(() => undefined, () => undefined)
+    );
     return outcome;
 }
