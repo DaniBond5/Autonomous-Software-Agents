@@ -136,16 +136,14 @@ export class LLMMemory {
      * @returns {string}
      */
     buildContext() {
-        // The rules go in beside the state because they are part of it: without reading them
-        // back the model cannot tell a rule it already registered from one it still has to,
-        // and would register the same thing again under a new id every turn.
-        const rules = this.beliefs.rules.format();
+        const strategy = this.beliefs.rules.describeActive();
         return [
             `Goal: ${this.goal}`,
             "",
             "Current state:",
             describeState(this.beliefs),
-            ...(rules ? ["", rules] : []),
+            "",
+            strategy,
             "",
             "What happened recently:",
             this.history.map(event => `- ${event}`).join("\n") || "- nothing yet",

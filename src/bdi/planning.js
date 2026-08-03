@@ -345,7 +345,8 @@ export class Planner {
             const nextPosition = this.activeDetour.remainingPath[0];
             const blockedByCrate = isCrateBlocked(nextPosition);
             const blockedByAgent = beliefs.agents.isOccupied(nextPosition);
-            if (blockedByCrate || blockedByAgent) {
+            const blockedByPolicy = beliefs.rules.isAvoided(nextPosition);
+            if (blockedByCrate || blockedByAgent || blockedByPolicy) {
                 const replannedDetour = BFS(beliefs, target, {
                     isBlocked: isBlockedForDetour,
                 });

@@ -32,11 +32,17 @@ Each LLM turn rebuilds its context from live beliefs. It includes:
 
 - the agent position, score and carried parcels;
 - known parcels and delivery tiles;
-- active mission rules;
+- the active Level 2 strategy;
 - the partner's last reported position and carried load.
 
 Each agent shares its position and load only when they change. The LLM reads this state
 directly from its context instead of asking for it again.
+
+### Persistent strategy adaptation
+
+The LLM agent can install persistent strategies for stack size, delivery tiles, parcel values,
+and avoided tiles. A strategy can apply to one agent or both agents and remains active until it
+is replaced or cleared.
 
 ## Installation
 
@@ -151,7 +157,7 @@ watch that agent play.
     │   ├── execution.js       # only physical socket actuator
     │   ├── loop.js            # shared BDI control loop
     │   ├── objectives.js      # physical objectives requested by the LLM
-    │   └── rules.js           # mission policies and temporary goals
+    │   └── rules.js           # Level 2 strategy policies and temporary hold
     ├── llm/
     │   ├── client.js          # OpenAI-compatible model client
     │   ├── core.js            # active and latest-pending mission lifecycle
