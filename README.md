@@ -80,42 +80,34 @@ Then fill it in:
 ```env
 HOST=http://localhost:8080
 TOKEN=your_agent_token
-BDI_NAME=
 LLM_TOKEN=
-LLM_NAME=
 ```
 
-Everything below `TOKEN` concerns the second agent and can be left empty to run the BDI
-agent alone.
-
-`BDI_NAME` and `LLM_NAME` are the names the two tokens were created with. They have to
-differ from each other: they are how each agent recognises the other among the connected
-players. Leaving them empty is a supported setting and means the agent plays alone.
+`LLM_TOKEN` is the second agent's own token, so the two play as two players. Leave it empty
+to run the BDI agent alone.
 
 `.env` is ignored by git and must not be committed.
 
 ## Running
 
+One file starts the program, and an argument says which agents play:
+
 ```bash
-npm start
+npm start          # the BDI agent alone
+npm run start:llm  # the LLM agent alone
+npm run start:both # both together, in one process
 ```
 
-Open the server address in a browser with the same token to watch the agent play from its
+Open the server address in a browser with the same token to watch an agent play from its
 own point of view.
 
-To run both agents, get a second token under a second name, fill in all five settings, and
-start one agent per terminal:
+The first two run one agent with no teammate, which is the baseline the pair is compared
+against. Each connects only its own token, so a `.env` holding one of the two is enough.
 
-```bash
-npm start        # first terminal, the BDI agent
-npm run start:llm  # second terminal, the LLM agent
-```
-
-The order does not matter, and the two terminals do not have to be on the same machine as
-long as both reach the same server. Each process logs the line `[partner] <name> is agent
-<id>` once it has recognised the other. Without that line the two are playing next to each
-other rather than together, and the usual cause is a name that does not match the one the
-token was created with.
+`npm run start:both` is the only mode in which the agents coordinate: it connects both
+tokens, gives each agent the other's id, and prints one line saying which id each of them
+got. Their log lines are prefixed with the name on their token, so `[bdi]` and `[llm]` tell
+the two apart.
 
 ## Configuration
 
@@ -137,8 +129,9 @@ Credentials live in `.env`. Everything else is in `src/config.js`:
 ├── package-lock.json         # pinned dependency versions, so installs are reproducible
 ├── README.md                 # this file
 └── src/
-    ├── agent.js              # entry point of the BDI agent
-    ├── llm-agent.js          # entry point of the LLM agent, and its chat handler
+    ├── main.js               # the entry point: starts one agent or both, and introduces them
+    ├── bdi-agent.js          # builds the BDI agent on a socket
+    ├── llm-agent.js          # builds the LLM agent, and handles its chat
     ├── config.js             # runtime settings; credentials are read from .env
     ├── bdi/
     │   ├── beliefs.js        # world model: Me, Parcels, Agents, Crates, World, Partner
