@@ -33,31 +33,44 @@ const intentionKey = (intention) =>
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {import("./planning.js").Planner} planner
  * @param {object} socket
- * @param {() => boolean} [isSuspended] true while something else drives the
- *        agent, for instance an LLM mission. The loop then stops acting.
+ * @param {{objectives?: import("./objectives.js").ObjectiveStore | null,
+ *          isSuspended?: () => boolean,
+ *          getSuspensionRevision?: () => number}} [options]
  */
-export async function runAgentLoop(beliefs, planner, socket, isSuspended = () => false) {
+export async function runAgentLoop(
+    beliefs,
+    planner,
+    socket,
+    {
+        objectives = null,
+        isSuspended = () => false,
+        getSuspensionRevision = () => 0,
+    } = {}
+) {
     let currentIntention = null;
+    let handledSuspensionRevision = getSuspensionRevision();
+
+    const handleRevisionChange = revision => {
+        handledSuspensionRevision = revision;
+        currentIntention = null;
+        planner.resetPlanningState("direct physical action changed the world");
+        beliefs.partner.announceIntention(null);
+    };
 
     console.log(`[${beliefs.me.name || "agent"}] loop started`);
 
     while (true) {
+        const revision = getSuspensionRevision();
+        if (revision !== handledSuspensionRevision) {
+            handleRevisionChange(revision);
+        }
         if (isSuspended()) {
-            // Dropping the goal once on suspension means the agent replans from
-            // the world it finds when it takes back control, not from a stale one.
-            if (currentIntention) {
-                currentIntention = null;
-                planner.resetPlanningState("control handed over");
-                // The parcel this agent was walking to is free again. A claim left standing would
-                // make the partner keep away from a parcel nobody is going to collect.
-                beliefs.partner.announceIntention(null);
-            }
             await wait(IDLE_WAIT_MS);
             continue;
         }
 
         const desires = planner.filterPlannableDesires(
-            generateDesires(beliefs),
+            generateDesires(beliefs, false, objectives),
             beliefs
         );
         const deliveryCrateCommitmentActive =
@@ -104,8 +117,43 @@ export async function runAgentLoop(beliefs, planner, socket, isSuspended = () =>
             beliefs
         );
 
+        // The revision catches a direct action even when it finished during planning.
+        // The boolean only tells whether that action is still running now.
+        const latestRevision = getSuspensionRevision();
+        if (latestRevision !== handledSuspensionRevision) {
+            handleRevisionChange(latestRevision);
+            continue;
+        }
+        if (isSuspended()) {
+            await wait(IDLE_WAIT_MS);
+            continue;
+        }
+
+        const objectiveId = currentIntention?.objectiveId ?? null;
+        if (objectiveId && !objectives?.isActive(objectiveId)) {
+            currentIntention = null;
+            planner.resetPlanningState("objective no longer active");
+            continue;
+        }
+        if (planningResult.status === "idle"
+            && objectiveId
+            && objectives?.isActive(objectiveId)) {
+            const { x, y } = currentIntention.target;
+            objectives.complete(objectiveId, `reached target (${x},${y})`);
+            currentIntention = null;
+            continue;
+        }
+
         if (planningResult.status === "unreachable"
             || planningResult.status === "deferred") {
+            if (planningResult.status === "unreachable"
+                && objectiveId
+                && objectives?.isActive(objectiveId)) {
+                objectives.fail(
+                    objectiveId,
+                    planningResult.reason || "target is unreachable"
+                );
+            }
             currentIntention = null;
         }
 

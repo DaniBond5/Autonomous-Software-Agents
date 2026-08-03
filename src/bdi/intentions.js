@@ -96,6 +96,11 @@ export function reviseIntention(
         ? desires.find(desire => desireKey(desire) === desireKey(currentIntention))
         : null;
 
+    // The store exposes only one external objective. Its exact id survives revision, while
+    // replacement with the same target still creates and selects a different intention.
+    const externalObjective = desires.find(desire => desire.objectiveId);
+    if (externalObjective) return active?.objectiveId ? active : externalObjective;
+
     // 1. A crate plan is already being executed: do not touch the intention.
     if (deliveryCrateCommitmentActive && active) return active;
 

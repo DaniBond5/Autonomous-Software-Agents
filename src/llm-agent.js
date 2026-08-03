@@ -2,6 +2,7 @@ import config from "./config.js";
 import { Beliefs } from "./bdi/beliefs.js";
 import { Planner } from "./bdi/planning.js";
 import { runAgentLoop } from "./bdi/loop.js";
+import { ObjectiveStore } from "./bdi/objectives.js";
 import { LLMClient } from "./llm/client.js";
 import { LLMMemory } from "./llm/memory.js";
 import { LLMPlanner } from "./llm/planner.js";
@@ -59,10 +60,11 @@ export function startLlmAgent(socket) {
     // Part A machinery without sharing state with the BDI agent.
     const beliefs = new Beliefs();
     const planner = new Planner();
+    const objectives = new ObjectiveStore();
     beliefs.init(socket);
 
     const memory = new LLMMemory(beliefs);
-    const executor = new LLMExecutor({ beliefs, planner, socket, memory });
+    const executor = new LLMExecutor({ beliefs, socket, memory, objectives });
     const agent = new LLMAgent({
         memory,
         executor,
@@ -91,7 +93,11 @@ export function startLlmAgent(socket) {
     // The first goal is ordinary play, and it travels the same path a mission
     // would. The agent reads it and hands itself over to the BDI loop below.
     setGoal(DEFAULT_GOAL, null);
-    runAgentLoop(beliefs, planner, socket, () => executor.onMission).catch((error) => {
+    runAgentLoop(beliefs, planner, socket, {
+        objectives,
+        isSuspended: () => executor.isDirectActionRunning,
+        getSuspensionRevision: () => executor.directActionRevision,
+    }).catch((error) => {
         console.error("[llm] fatal error:", error);
         process.exitCode = 1;
     });
