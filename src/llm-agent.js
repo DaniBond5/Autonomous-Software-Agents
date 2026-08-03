@@ -64,7 +64,7 @@ export function startLlmAgent(socket) {
     beliefs.init(socket);
 
     const memory = new LLMMemory(beliefs);
-    const executor = new LLMExecutor({ beliefs, socket, memory, objectives });
+    const executor = new LLMExecutor({ beliefs, socket, objectives });
     const agent = new LLMAgent({
         memory,
         executor,
