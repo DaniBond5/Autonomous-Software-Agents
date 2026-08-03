@@ -270,7 +270,11 @@ export class LLMExecutor {
      */
     async run(name, input) {
         const tool = this.tools[name];
+        // The two failures a tool did not choose are marked for the replanner. Both mean the
+        // model asked for something that could not happen, which is worth a fresh look at the
+        // plan rather than a quiet retry of the same call.
         if (!tool) {
+            this.memory.noteToolFailure(name);
             return `there is no tool called "${name}". `
                 + `Available tools: ${Object.keys(this.tools).join(", ")}`;
         }
@@ -278,6 +282,7 @@ export class LLMExecutor {
         try {
             return await tool.run(input);
         } catch (error) {
+            this.memory.noteToolFailure(name);
             return `${name} failed: ${error instanceof Error ? error.message : String(error)}`;
         }
     }
