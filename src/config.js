@@ -4,18 +4,12 @@ import "dotenv/config";
 const config = {
     deliveroo: {
         host: process.env.HOST,
-        // The name is the one the token was created with. Each agent looks for
-        // the other one by name among the connected players, so the mapping
-        // lives here once instead of in both entry points.
-        // A null name means the agent runs alone.
         agents: {
             bdi: {
                 token: process.env.TOKEN,
-                name: process.env.BDI_NAME || null,
             },
             llm: {
                 token: process.env.LLM_TOKEN || null,
-                name: process.env.LLM_NAME || null,
             },
         },
     },

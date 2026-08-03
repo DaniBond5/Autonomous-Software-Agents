@@ -1,5 +1,3 @@
-import { DjsConnect } from "@unitn-asa/deliveroo-js-sdk";
-
 import config from "./config.js";
 import { Beliefs } from "./bdi/beliefs.js";
 import { Planner } from "./bdi/planning.js";
@@ -10,11 +8,6 @@ import { LLMPlanner } from "./llm/planner.js";
 import { LLMReplanner } from "./llm/replanner.js";
 import { LLMExecutor } from "./llm/executor.js";
 import { LLMAgent, DEFAULT_GOAL } from "./llm/core.js";
-
-const socket = DjsConnect(
-    config.deliveroo.host,
-    config.deliveroo.agents.llm.token
-);
 
 /**
  * Reads the text out of a chat message. The server passes on whatever the
@@ -54,13 +47,19 @@ function isMissionSender(id, name) {
     return !allowed || allowed === id || allowed === name;
 }
 
-async function main() {
+/**
+ * Builds the LLM agent on a socket and starts its cycle.
+ * Like the BDI entry point, the loop never returns, so it is started rather than awaited and
+ * the beliefs come back for the launcher to wire a partner into.
+ * @param {object} socket
+ * @returns {import("./bdi/beliefs.js").Beliefs} this agent's beliefs
+ */
+export function startLlmAgent(socket) {
     // Its own beliefs and planner on its own socket: the LLM agent reuses the
     // Part A machinery without sharing state with the BDI agent.
     const beliefs = new Beliefs();
     const planner = new Planner();
-    // The other agent is the BDI one, recognised by the name its token carries.
-    beliefs.init(socket, { partnerName: config.deliveroo.agents.bdi.name });
+    beliefs.init(socket);
 
     const memory = new LLMMemory(beliefs);
     const executor = new LLMExecutor({ beliefs, planner, socket, memory });
@@ -79,7 +78,7 @@ async function main() {
 
     socket.onMsg((id, name, message) => {
         // The partner talks on this same channel. The sender check is the point, the shape check
-        // covers the window before a connection event has resolved the partner's id.
+        // covers the window before the launcher has handed over the partner's id.
         if (id === beliefs.partner.id || isProtocolMessage(message)) return;
 
         const text = messageText(message);
@@ -92,10 +91,10 @@ async function main() {
     // The first goal is ordinary play, and it travels the same path a mission
     // would. The agent reads it and hands itself over to the BDI loop below.
     setGoal(DEFAULT_GOAL, null);
-    await runAgentLoop(beliefs, planner, socket, () => executor.onMission);
-}
+    runAgentLoop(beliefs, planner, socket, () => executor.onMission).catch((error) => {
+        console.error("[llm] fatal error:", error);
+        process.exitCode = 1;
+    });
 
-main().catch((error) => {
-    console.error("[llm] fatal error:", error);
-    process.exitCode = 1;
-});
+    return beliefs;
+}

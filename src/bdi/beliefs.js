@@ -538,15 +538,16 @@ const PROTOCOL_VERSION = 1;
  * It also owns the sending side of the protocol, because a belief about the partner is the only thing worth sending it.
 */
 class Partner {
-    constructor() {
-        /**
-         * The name the partner's token was created with, or null when the agent runs alone.
-         * @type {string | null}
-        */
-        this.name = null;
+    /**
+     * @param {Me} me the agent this partner belongs to, so its log lines say which of the two
+     *        wrote them when both run in one process.
+    */
+    constructor(me) {
+        this.me = me;
 
         /**
-         * The partner's agent id, assigned by the server and resolved from connection events, or null while unknown.
+         * The partner's agent id, given by the launcher once both agents have connected,
+         * or null when this agent runs alone.
          * @type {string | null}
         */
         this.id = null;
@@ -584,12 +585,12 @@ class Partner {
     }
 
     /**
-     * This function records the partner's id once a connection event has identified it.
+     * This function records the partner's id, which the launcher knows because it built both.
      * @param {string} id
     */
     connected(id) {
         this.id = id;
-        console.log(`[partner] ${this.name} is agent ${id}`);
+        console.log(`[${this.me.name || "agent"}] partner is agent ${id}`);
 
         // The partner missed whatever was said before it arrived. Forgetting the last report makes
         // the next sensing send one, and a claim already made is repeated here, so starting order does not matter.
@@ -599,9 +600,11 @@ class Partner {
 
     /**
      * This function forgets the partner when it leaves the game.
+     * Nothing calls it now that the launcher hands over both ids at startup and neither agent
+     * outlives the other. It stays because it is the right answer if one ever does.
     */
     disconnected() {
-        console.log(`[partner] ${this.name} disconnected`);
+        console.log(`[${this.me.name || "agent"}] partner disconnected`);
         this.id = null;
 
         // A claim by an agent that is gone would keep a parcel reserved for nobody.
@@ -614,10 +617,11 @@ class Partner {
     */
     setClaim(claim) {
         this.claim = claim;
+        const me = this.me.name || "agent";
         console.log(
             claim
-                ? `[partner] claims parcel ${claim.parcelId} at distance ${claim.distance}`
-                : "[partner] claims nothing"
+                ? `[${me}] partner claims parcel ${claim.parcelId} at distance ${claim.distance}`
+                : `[${me}] partner claims nothing`
         );
     }
 
@@ -918,8 +922,8 @@ class World {
 /**
  * This class is an Aggregator that owns the belief components and wires them to the socket.
  * It only coordinates and delegates, it contains no domain logic.
- * One instance per agent, built by agent.js, so two agents in the same
- * process cannot overwrite each other's beliefs.
+ * One instance per agent, built wherever an agent is started, so two agents sharing
+ * a process cannot overwrite each other's beliefs.
  */
 export class Beliefs {
     constructor() {
@@ -928,7 +932,7 @@ export class Beliefs {
         this.crates = new Crates();
         this.agents = new Agents();
         this.world = new World();
-        this.partner = new Partner();
+        this.partner = new Partner(this.me);
 
         // Not sensing, but read by desire generation, pathfinding and intention revision,
         // all of which already receive beliefs. See the RuleStore comment for the trade-off.
@@ -937,10 +941,8 @@ export class Beliefs {
 
     /**
      * @param {object} socket
-     * @param {{partnerName?: string | null}} [options] the name of the other agent, when there is one.
     */
-    init(socket, { partnerName = null } = {}) {
-        this.partner.name = partnerName;
+    init(socket) {
         this.partner.socket = socket;
 
         socket.onYou((payload) => {
@@ -968,34 +970,6 @@ export class Beliefs {
                     parcel => !parcel.carriedBy && parcel.reward > 0
                 )
             );
-        });
-
-        // The partner's id is assigned by the server, so it cannot be agreed in advance or shared between
-        // two processes. The server sends one of these events for every agent already connected and then
-        // one per connection and disconnection, which resolves the id whichever agent starts first.
-        socket.onAgentConnected((status, agent) => {
-            if (!this.partner.name || agent?.name !== this.partner.name) return;
-
-            // Our own event carries our own name back to us. It can arrive before `you`, and then me.id is
-            // still empty and this does not fire: sharing a name with the partner is a misconfiguration,
-            // and the warning below reports it.
-            if (agent.id === this.me.id) return;
-
-            if (status === 'connected') {
-                if (this.partner.isKnown && this.partner.id !== agent.id) {
-                    console.warn(
-                        `[partner] two agents answer to ${agent.name}: keeping ${this.partner.id}, `
-                        + `ignoring ${agent.id}. Check BDI_NAME and LLM_NAME`
-                    );
-                    return;
-                }
-                this.partner.connected(agent.id);
-                return;
-            }
-
-            if (status === 'disconnected' && this.partner.id === agent.id) {
-                this.partner.disconnected();
-            }
         });
 
         // Chat carries both partner messages and whatever a human types, so a message is only revised into
