@@ -104,6 +104,13 @@ function buildProblemKey(
         .map(crate => `${encodeURIComponent(crate.id)}:${crate.x},${crate.y}`)
         .sort()
         .join(";");
+    // Avoided tiles are part of the problem state.
+    // A strategy change must invalidate an older solver result.
+    const avoidedState = [...beliefs.rules.avoided.values()]
+        .map(({ x, y }) => ({ x, y }))
+        .sort((a, b) => a.x - b.x || a.y - b.y)
+        .map(({ x, y }) => `${x},${y}`)
+        .join(";");
 
     return [
         `intention=${encodeURIComponent(intentionKey)}`,
@@ -111,7 +118,8 @@ function buildProblemKey(
         `agent=${currentPosition.x},${currentPosition.y}`,
         `goal=${planningGoal.x},${planningGoal.y}`,
         `target=${finalTarget.x},${finalTarget.y}`,
-        `crates=${crateState}`
+        `crates=${crateState}`,
+        `avoided=${avoidedState}`
     ].join("|");
 }
 
@@ -200,7 +208,9 @@ function buildProblem(beliefs, planningGoal) {
         for (const { dx, dy } of directions) {
             const to = { x: from.x + dx, y: from.y + dy };
             const toName = tileNameByPosition.get(POSITION_KEY(to));
-            if (toName && isMoveAllowed(beliefs, from, to)) {
+            if (toName
+                && !beliefs.rules.isAvoided(to)
+                && isMoveAllowed(beliefs, from, to)) {
                 init.push(`(adjacent ${fromName} ${toName})`);
             }
         }
@@ -208,6 +218,8 @@ function buildProblem(beliefs, planningGoal) {
 
     for (const from of tiles) {
         if (!beliefs.world.isCrateSpace(from)) continue;
+        const agentDestination = from;
+        if (beliefs.rules.isAvoided(agentDestination)) continue;
         const fromName = tileNameByPosition.get(POSITION_KEY(from));
 
         for (const { dx, dy } of directions) {
@@ -367,6 +379,7 @@ function normalizePlan(plan, snapshot, target) {
 function validateNextAction(action, beliefs) {
     const currentPosition = roundPosition(beliefs.me.pos);
     if (!samePosition(currentPosition, action.from)) return "invalid";
+    if (beliefs.rules.isAvoided(action.to)) return "invalid";
 
     if (action.kind === "move") {
         if (

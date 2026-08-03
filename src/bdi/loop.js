@@ -101,7 +101,7 @@ export async function runAgentLoop(
 
     while (true) {
         const desires = planner.filterPlannableDesires(
-            generateDesires(beliefs, false, objectives),
+            generateDesires(beliefs, objectives),
             beliefs
         );
         const deliveryCrateCommitmentActive =

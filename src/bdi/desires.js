@@ -31,45 +31,20 @@ export function desireKey(desire) {
 }
 
 /**
- * This function returns an array of the delivery tiles present in the map.
- * It gives priority to operational delivery tiles, for the definition of operational tiles refer to the comments in Beliefs.
- * If at least one operational delivery tile is present, an array containing them is returned.
- * If none are present, all delivery tiles are returned. 
- * @param {import ("@unitn-asa/deliveroo-js-sdk").IOTile[]} candidates 
- * @returns {import ("@unitn-asa/deliveroo-js-sdk").IOTile[]} an array of only the operational delivery tiles if present, all delivery tiles otherwise.
+ * Keeps delivery tiles that are operational or explicitly allowed by a policy.
+ * If none are safe, every reachable candidate remains available as a fallback.
+ * @param {import("./beliefs.js").Beliefs} beliefs
+ * @param {object[]} candidates
+ * @returns {object[]} safe candidates when possible, or all candidates as a fallback.
  */
-function preferOperationalDeliveryCandidates(candidates) {
-    const operational = candidates.filter(candidate =>
+function preferOperationalDeliveryCandidates(beliefs, candidates) {
+    // A policy can explicitly allow one delivery tile.
+    // Other unsafe delivery tiles remain excluded.
+    const safe = candidates.filter(candidate =>
         candidate.delivery.canReachOperationalSpawner === true
+        || beliefs.rules.includesDeliveryTile(candidate.delivery)
     );
-    return operational.length > 0 ? operational : candidates;
-}
-
-/**
- * This function returns the nearest delivery tile given a search and all delivery tiles.
- * Priority is given to operational delivery tiles, so if at least one is present, the nearest delivery tile is computed among them,
- * otherwise it's computed through all delivery tiles.
- * @param {import("../utils/geometry.js").ShortestPaths | null} search
- * @param {Iterable<Point>} deliveries
- * @returns {{delivery: Point, distance: number} | null}
- */
-function nearestReachableDelivery(search, deliveries) {
-    const candidates = [];
-    for (const delivery of deliveries) {
-        const distance = distanceFromSearch(search, delivery);
-        if (Number.isFinite(distance)) {
-            candidates.push({ delivery, distance });
-        }
-    }
-
-    let nearest = null;
-    for (const candidate of preferOperationalDeliveryCandidates(candidates)) {
-        if (candidate.distance < (nearest?.distance ?? Infinity)) {
-            nearest = candidate;
-        }
-    }
-
-    return nearest;
+    return safe.length > 0 ? safe : candidates;
 }
 
 /**
@@ -88,43 +63,72 @@ function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
             0,
             parcel.reward - decayPerMove * distanceToDelivery
         );
-        // The one place a carried parcel is weighed against a value rule. Both utilities
-        // below reach this function, so applying the rule in either of them as well would
-        // square the multiplier.
-        const value = beliefs.rules.parcelValueEffect(parcel.reward);
-        expectedReward += Math.max(0, decayed * value.multiplier + value.additive);
+        expectedReward += decayed * beliefs.rules.parcelMultiplier(parcel.reward);
     }
 
     return expectedReward;
 }
 
 /**
- * This function computes the utility of picking up the given parcel.
- * The utility is computed by using both the distance to the parcel and the distance to the nearest delivery tile.
- * @todo Add formula in comments.
+ * Computes the reward a batch on one tile would retain at a delivery.
  * @param {import("./beliefs.js").Beliefs} beliefs
- * @param {number} pickupCost
- * @param {number} expectedNewParcelReward
- * @param {number} parcelReward the parcel's own reward, which is what a value rule is matched on
- * @returns {number} the path-efficiency utility for picking up the parcel.
+ * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} batch
+ * @param {number} totalDistance
  */
-function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward, parcelReward) {
-    const expectedCarriedReward = expectedCarriedRewardAtDelivery(beliefs, pickupCost);
-    const value = beliefs.rules.parcelValueEffect(parcelReward);
-    const expectedNewReward = Math.max(
-        0,
-        expectedNewParcelReward * value.multiplier + value.additive
-    );
+function expectedBatchRewardAtDelivery(beliefs, batch, totalDistance) {
+    const decayPerMove = beliefs.world.decayPerMove();
+    let reward = 0;
+    for (const parcel of batch) {
+        const decayed = Math.max(0, parcel.reward - decayPerMove * totalDistance);
+        reward += decayed * beliefs.rules.parcelMultiplier(parcel.reward);
+    }
+    return reward;
+}
 
-    // The stack rule is weighed at the count the agent would be carrying with this parcel in
-    // hand, not the count it carries now. A bonus for stacks of three has to make the first and
-    // the second pickup worth more, and at the current count it never would: the agent would
-    // take one parcel, find the delivery already worth walking to, and deliver it alone.
-    const stack = beliefs.rules.stackEffect(beliefs.parcels.carried.size + 1);
-    const expectedTotalDeliveredReward =
-        (expectedCarriedReward + expectedNewReward) * stack.multiplier + stack.additive;
+/**
+ * Chooses the future delivery that gives one pickup batch its best expected utility.
+ * @param {import("./beliefs.js").Beliefs} beliefs
+ * @param {import("../utils/geometry.js").ShortestPaths | null} parcelPaths
+ * @param {number} distanceToParcel
+ * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} batch
+ * @returns {{delivery:Point,utility:number}|null}
+ */
+function bestDeliveryAfterPickup(beliefs, parcelPaths, distanceToParcel, batch) {
+    const projectedCount = beliefs.parcels.carried.size + batch.length;
+    const candidates = [];
 
-    return expectedTotalDeliveredReward / Math.max(1, pickupCost);
+    for (const delivery of beliefs.world.deliveries.values()) {
+        const distanceAfterPickup = distanceFromSearch(parcelPaths, delivery);
+        if (!Number.isFinite(distanceAfterPickup)) continue;
+
+        const totalDistance = distanceToParcel + distanceAfterPickup;
+        const newReward = expectedBatchRewardAtDelivery(
+            beliefs,
+            batch,
+            totalDistance
+        );
+        const carriedReward = expectedCarriedRewardAtDelivery(
+            beliefs,
+            totalDistance
+        );
+        const adjustedReward = (carriedReward + newReward)
+            * beliefs.rules.stackMultiplier(projectedCount)
+            * beliefs.rules.deliveryMultiplier(delivery);
+        // A zero-value parcel can still complete an exact stack.
+        // Keep it only when the full delivery has positive value.
+        if (adjustedReward <= 0) continue;
+
+        candidates.push({
+            delivery,
+            utility: adjustedReward / Math.max(1, totalDistance)
+        });
+    }
+
+    let best = null;
+    for (const candidate of preferOperationalDeliveryCandidates(beliefs, candidates)) {
+        if (candidate.utility > (best?.utility ?? 0)) best = candidate;
+    }
+    return best;
 }
 
 /**
@@ -133,21 +137,15 @@ function pickUpUtility(beliefs, pickupCost, expectedNewParcelReward, parcelRewar
  * @todo add formula in comments
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
- * @param {Point} deliveryTile the tile being scored, since a rule can single one out
+ * @param {Point} deliveryTile the tile being scored, since a policy can single one out
  * @returns {number} the path-efficiency utility for delivering.
  */
 function deliverUtility(beliefs, distanceToDelivery, deliveryTile) {
     const expectedDeliveredReward = expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery);
 
-    // Here the stack rule is weighed at the count actually in hand: this is the delivery that
-    // would happen now. Both effects land on the expected reward and not on the finished
-    // utility, because every utility here is a rate and scaling a rate would make desires of
-    // different types incomparable.
-    const stack = beliefs.rules.stackEffect(beliefs.parcels.carried.size);
-    const tile = beliefs.rules.deliveryTileEffect(deliveryTile);
-    const expectedRuledReward =
-        (expectedDeliveredReward * stack.multiplier + stack.additive)
-        * tile.multiplier + tile.additive;
+    const expectedRuledReward = expectedDeliveredReward
+        * beliefs.rules.stackMultiplier(beliefs.parcels.carried.size)
+        * beliefs.rules.deliveryMultiplier(deliveryTile);
 
     return expectedRuledReward / Math.max(1, distanceToDelivery);
 }
@@ -168,16 +166,31 @@ function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
  * This function generates the current set of desires as plain objects, given the beliefs.
  * Desires are ephemeral data, regenerated every cycle.
  * @param {import("./beliefs.js").Beliefs} beliefs
- * @param {boolean} [ignoreAvoided=false] set by the retry at the bottom of this function
  * @param {import("./objectives.js").ObjectiveStore | null} [objectives=null]
  * @returns {Desire[]} the generated desires.
  */
-export function generateDesires(beliefs, ignoreAvoided = false, objectives = null) {
+export function generateDesires(beliefs, objectives = null) {
     const desires = [];
     const knownParcels = beliefs.parcels.availableKnown(beliefs.world.localDecayIntervalMs);
-    const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos, { ignoreAvoided });
+    const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos);
+    const batches = new Map();
+    for (const parcel of knownParcels) {
+        const key = `${parcel.x},${parcel.y}`;
+        const batch = batches.get(key) ?? [];
+        batch.push(parcel);
+        batches.set(key, batch);
+    }
+    const pickupTiles = new Set();
 
     for (const parcel of knownParcels) {
+        const parcelKey = `${parcel.x},${parcel.y}`;
+        if (pickupTiles.has(parcelKey)) continue;
+        const batch = batches.get(parcelKey);
+        if (!beliefs.rules.canPickUpBatch(
+            beliefs.parcels.carried.size,
+            batch.length
+        )) continue;
+
         const distanceToParcel = distanceFromSearch(agentPaths, parcel);
         if (!Number.isFinite(distanceToParcel)) continue;
 
@@ -186,38 +199,29 @@ export function generateDesires(beliefs, ignoreAvoided = false, objectives = nul
         // desires and the other one keeps it. The check sits here because it needs the distance above.
         if (beliefs.partner.outbidsMeOn(parcel.id, distanceToParcel, beliefs.me.id)) continue;
 
-        const parcelPaths = shortestPathsFrom(beliefs, parcel, { ignoreAvoided });
-        const delivery = nearestReachableDelivery(
+        const parcelPaths = shortestPathsFrom(beliefs, parcel);
+        const delivery = bestDeliveryAfterPickup(
+            beliefs,
             parcelPaths,
-            beliefs.world.deliveries.values()
+            distanceToParcel,
+            batch
         );
         if (!delivery) continue;
 
-        const pickupCost = distanceToParcel + delivery.distance;
-        const expectedNewParcelRewardAtDelivery = Math.max(
-            0,
-            parcel.reward - beliefs.world.decayPerMove() * pickupCost
-        );
-        if (expectedNewParcelRewardAtDelivery <= 0) continue;
-
-        const utility = pickUpUtility(
-            beliefs,
-            pickupCost,
-            expectedNewParcelRewardAtDelivery,
-            parcel.reward
-        );
-        if (utility > 0) {
+        if (delivery.utility > 0) {
+            pickupTiles.add(parcelKey);
             desires.push({
                 type: 'go_pick_up',
                 target: { x: parcel.x, y: parcel.y },
-                utility,
+                utility: delivery.utility,
                 distance: distanceToParcel,
                 id: parcel.id
             });
         }
     }
 
-    if (beliefs.parcels.carried.size > 0) {
+    if (beliefs.parcels.carried.size > 0
+        && beliefs.rules.canDeliverStack(beliefs.parcels.carried.size)) {
         const deliveryCandidates = [];
         for (const delivery of beliefs.world.deliveries.values()) {
             const distanceToDelivery = distanceFromSearch(agentPaths, delivery);
@@ -237,6 +241,7 @@ export function generateDesires(beliefs, ignoreAvoided = false, objectives = nul
             }
         }
         for (const candidate of preferOperationalDeliveryCandidates(
+            beliefs,
             deliveryCandidates
         )) {
             desires.push(candidate.desire);
@@ -279,15 +284,6 @@ export function generateDesires(beliefs, ignoreAvoided = false, objectives = nul
     // The BDI loop reads the objective published by the LLM as a normal desire.
     const objectiveDesire = objectives?.getActiveDesire();
     if (objectiveDesire) desires.push(objectiveDesire);
-
-    // An avoided tile is a hard exclusion in the search, and one tile in a corridor can cut the
-    // map in two and leave the agent with nothing reachable and nothing to want. Rather than
-    // stand still, plan the cycle again with the avoidance lifted: when the only route crosses
-    // the tile the agent crosses it, which is the call a soft penalty would arrive at anyway.
-    // One retry only, since the flag is set on the way in.
-    if (desires.length === 0 && !ignoreAvoided && beliefs.rules.hasAvoided) {
-        return generateDesires(beliefs, true, objectives);
-    }
 
     return desires;
 }

@@ -1,5 +1,8 @@
 import config from "../config.js";
-import { applyRule } from "../bdi/rules.js";
+import {
+    applyStrategyOperation,
+    normalizeStrategyOperation
+} from "../bdi/rules.js";
 
 const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
@@ -41,6 +44,7 @@ function failure(observation, replanReason) {
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
+const STRATEGY_SCOPES = new Set(["me", "teammate", "both"]);
 
 /**
  * Evaluates an arithmetic expression without eval, which would run whatever
@@ -172,39 +176,35 @@ export class LLMExecutor {
                         : success(`${expression} = ${value}`);
                 },
             },
-            // The five tools below change normal BDI deliberation without taking it over.
-            // Their rules stay in force after the mission ends.
-            set_scoring_rule: {
-                description: "Change how rewards are scored, for a mission that holds for the "
-                    + "rest of the game. Input is one JSON object. The axes are stack_count "
-                    + '(fields equals, min, max), delivery_tile (fields x, y) and '
-                    + "parcel_value (fields minReward, maxReward). The effect is multiplier, "
-                    + "additive, or both. Registering the same id again replaces the rule. "
-                    + "Rules add up, so a mission usually needs more than one. For a mission "
-                    + "that pays for a stack of a given size, register the bonus at that size "
-                    + "and a reduction below it, or nothing will make you hold on to parcels "
-                    + "instead of delivering them one at a time. For stacks of three: "
-                    + '{"id":"stack3","axis":"stack_count","equals":3,"multiplier":2} and '
-                    + '{"id":"small","axis":"stack_count","max":2,"multiplier":0.3}. '
-                    + "To discourage something use a fraction, never 0: 0 means you can never "
-                    + "do it at all, and parcels you cannot deliver decay in your hands.",
-                run: input => this.registerRule(input),
+            set_stack_policy: {
+                description: "Deliver only exact stacks of parcels. Input is JSON with "
+                    + 'count, multiplier, and optional scope, for example '
+                    + '{"count":3,"multiplier":2,"scope":"me"}.',
+                run: input => this.runStrategyTool(input, "set_stack"),
+            },
+            set_delivery_policy: {
+                description: "Set one multiplier for one or more known delivery tiles. "
+                    + "Input is JSON with tiles, multiplier, and optional scope, for example "
+                    + '{"tiles":[{"x":4,"y":7}],"multiplier":5,"scope":"both"}.',
+                run: input => this.runStrategyTool(input, "set_delivery"),
+            },
+            set_parcel_value_policy: {
+                description: "Set a multiplier for parcels above, below, at_least, or at_most "
+                    + "one value. Input is JSON with comparison, value, multiplier, and "
+                    + 'optional scope, for example {"comparison":"above","value":10,'
+                    + '"multiplier":0,"scope":"me"}.',
+                run: input => this.runStrategyTool(input, "set_parcel_value"),
             },
             avoid_tile: {
-                description: "Never walk through a tile again, for a mission that punishes "
-                    + 'stepping on one. Input is the tile, for example "4,7". The agent will '
-                    + "still cross it if that is the only way to reach anything at all.",
-                run: async input => {
-                    const tile = parseTile(input);
-                    if (!tile) {
-                        return failure(
-                            `Cannot read "${input}" as a tile. Write it as x,y.`,
-                            "the avoid_tile input was not a valid tile"
-                        );
-                    }
-                    this.beliefs.rules.avoidTile(tile);
-                    return success(`Avoiding (${tile.x},${tile.y}) from now on.`);
-                },
+                description: "Never walk through one known map tile. Input is JSON with x, y, "
+                    + 'and optional scope, for example {"x":3,"y":6,"scope":"both"}.',
+                run: input => this.runStrategyTool(input, "avoid_tile"),
+            },
+            clear_strategy: {
+                description: "Remove the selected agents' active Level 2 policies without "
+                    + "removing a temporary hold. Input is JSON with optional scope, for "
+                    + 'example {"scope":"both"}.',
+                run: input => this.runStrategyTool(input, "clear"),
             },
             hold_at: {
                 description: "Go to a tile and wait there, then go back to playing. Input is "
@@ -217,16 +217,6 @@ export class LLMExecutor {
                     + 'carry on. Same input as hold_at, for example "4,7 30". Use it for a '
                     + "mission that asks both agents to meet.",
                 run: input => this.sendPartnerTo(input),
-            },
-            clear_rules: {
-                description: "Lift every rule registered so far and go back to ordinary "
-                    + "scoring. Takes no input. Use it when a mission is called off.",
-                run: async () => {
-                    const lifted = this.beliefs.rules.clear();
-                    return success(lifted === 0
-                        ? "there were no rules to lift"
-                        : `lifted ${lifted} rules: scoring is back to normal`);
-                },
             },
         };
     }
@@ -388,38 +378,112 @@ export class LLMExecutor {
         throw new TypeError("put_down received an unknown objective result");
     }
 
-    /**
-     * Registers a scoring rule written by the model, and passes it to the partner.
-     * A rule of the game binds the team, but the mission was only sent to one of us.
-     * @param {string} input the rule as JSON
-     * @returns {Promise<ToolExecutionResult>}
-     */
-    async registerRule(input) {
+    /** Parses one semantic tool input and sends it through the scoped strategy path. */
+    runStrategyTool(input, type) {
         let raw;
         try {
             raw = JSON.parse(String(input ?? ""));
         } catch {
-            // A rejected tool call is a message the model can act on, so it says what a good
-            // one looks like rather than only that this one was bad.
             return failure(
-                'That is not JSON. Write one object, for example '
-                    + '{"id":"stack3","axis":"stack_count","equals":3,"multiplier":2}.',
-                "the scoring rule input was not valid JSON"
+                "Cannot apply strategy: the input is not valid JSON.",
+                "the requested strategy could not be applied to the selected scope"
+            );
+        }
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+            return failure(
+                "Cannot apply strategy: the input must be one JSON object.",
+                "the requested strategy could not be applied to the selected scope"
             );
         }
 
-        const result = applyRule(this.beliefs.rules, raw);
-        if (!result.ok) {
+        const { scope = "me", type: _ignoredType, ...fields } = raw;
+        return this.applyScopedStrategy({ type, ...fields }, scope);
+    }
+
+    /**
+     * Scope controls where the same normalized operation is applied.
+     * Each receiver stores it locally and does not send it back.
+     */
+    applyScopedStrategy(rawOperation, scope) {
+        if (!STRATEGY_SCOPES.has(scope)) {
             return failure(
-                `Rule refused: ${result.reason}`,
-                `the scoring rule was invalid: ${result.reason}`
+                'Cannot apply strategy: scope must be "me", "teammate", or "both".',
+                "the requested strategy could not be applied to the selected scope"
             );
         }
 
-        // What goes on the wire is the rule as written, not as stored: the partner puts it
-        // through the same validation this agent just did, and that reads the written shape.
-        this.beliefs.partner.sendRule(raw);
-        return success(`Rule ${result.rule.id} is in force: ${result.summary}`);
+        const normalized = normalizeStrategyOperation(rawOperation);
+        if (!normalized.ok) {
+            return failure(
+                `Cannot apply strategy: ${normalized.reason}.`,
+                "the requested strategy could not be applied to the selected scope"
+            );
+        }
+        const operation = normalized.operation;
+
+        if (operation.type === "set_delivery") {
+            const unknown = operation.tiles.find(tile =>
+                !this.beliefs.world.deliveries.has(`${tile.x},${tile.y}`)
+            );
+            if (unknown) {
+                return failure(
+                    `Cannot apply strategy: (${unknown.x},${unknown.y}) is not a known delivery tile.`,
+                    "the requested strategy could not be applied to the selected scope"
+                );
+            }
+        }
+        if (operation.type === "avoid_tile"
+            && !this.beliefs.world.tiles.has(`${operation.x},${operation.y}`)) {
+            return failure(
+                `Cannot apply strategy: (${operation.x},${operation.y}) is not a known map tile.`,
+                "the requested strategy could not be applied to the selected scope"
+            );
+        }
+
+        const includesTeammate = scope === "teammate" || scope === "both";
+        if (includesTeammate && !this.beliefs.partner.isKnown) {
+            return failure(
+                "Cannot apply the policy to the teammate: no partner is configured.",
+                "the requested strategy could not be applied to the selected scope"
+            );
+        }
+
+        if (scope === "me" || scope === "both") {
+            const applied = applyStrategyOperation(this.beliefs.rules, operation);
+            if (!applied.ok) {
+                return failure(
+                    `Cannot apply strategy: ${applied.reason}.`,
+                    "the requested strategy could not be applied to the selected scope"
+                );
+            }
+        }
+        if (includesTeammate) this.beliefs.partner.shareStrategy(operation);
+
+        return success(this.strategyObservation(operation, scope));
+    }
+
+    strategyObservation(operation, scope) {
+        const target = scope === "me"
+            ? "this agent"
+            : scope === "teammate"
+                ? "the teammate"
+                : "both agents";
+        switch (operation.type) {
+            case "set_stack":
+                return `Stack policy set for ${target}: deliver exactly ${operation.count} `
+                    + `parcels with multiplier ${operation.multiplier}.`;
+            case "set_delivery":
+                return `Delivery policy set for ${target}: ${operation.tiles
+                    .map(tile => `(${tile.x},${tile.y})`).join(", ")} have multiplier `
+                    + `${operation.multiplier}.`;
+            case "set_parcel_value":
+                return `Parcel value policy set for ${target}: parcels ${operation.comparison} `
+                    + `${operation.value} have multiplier ${operation.multiplier}.`;
+            case "avoid_tile":
+                return `Avoided tile (${operation.x},${operation.y}) set for ${target}.`;
+            default:
+                return `Level 2 strategy cleared for ${target}.`;
+        }
     }
 
     /**
@@ -436,7 +500,7 @@ export class LLMExecutor {
             );
         }
 
-        const result = applyRule(this.beliefs.rules, {
+        const result = this.beliefs.rules.setHold({
             id: `hold ${hold.x},${hold.y}`,
             ...hold
         });
@@ -469,7 +533,7 @@ export class LLMExecutor {
             );
         }
 
-        this.beliefs.partner.sendRule({ id: `hold ${hold.x},${hold.y}`, ...hold });
+        this.beliefs.partner.shareHold({ id: `hold ${hold.x},${hold.y}`, ...hold });
         return success(`Asked the other agent to wait at (${hold.x},${hold.y}) `
             + `for ${hold.seconds} seconds.`);
     }
@@ -500,6 +564,12 @@ Use that state directly instead of asking for it again.
 The bottom-left tile is (0,0). x grows to the right and y grows upwards.
 Partner information is the last state reported by the other agent. If partner
 information is missing, do not invent it.
+
+Level 2 policies stay active after the mission ends. Use one semantic policy
+tool for each requested strategy change. Use scope "me" for this agent only,
+scope "teammate" for the BDI partner only, and scope "both" only when the
+mission explicitly applies to both agents. A multiplier can be zero. Use
+clear_strategy only when the active Level 2 strategy must be removed.
 
 Your tools:
 ${tools}

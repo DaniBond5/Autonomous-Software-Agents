@@ -2,7 +2,7 @@ import {
     distanceFromSearch,
     shortestPathsFrom
 } from "../utils/geometry.js";
-import { RuleStore, applyRule } from "./rules.js";
+import { RuleStore, applyStrategyOperation } from "./rules.js";
 
 /**
  * This constant is used to convert position coordinates into a standard key to be used for all data structures that involve positions and need one.
@@ -754,14 +754,14 @@ class Partner {
         });
     }
 
-    /**
-     * This function passes a rule of the game on to the partner.
-     * A mission is given to one agent but binds the team, and the partner has no other way
-     * of hearing about it: the message it was sent went to one of us.
-     * @param {object} rule a rule already accepted by this agent's own store
-    */
-    sendRule(rule) {
-        this.send({ kind: 'rule', rule });
+    /** Sends one normalized strategy operation without applying it locally. */
+    shareStrategy(operation) {
+        this.send({ kind: 'strategy', operation });
+    }
+
+    /** Sends one temporary hold without making it part of the Level 2 strategy. */
+    shareHold(hold) {
+        this.send({ kind: 'hold', hold });
     }
 
     /**
@@ -1015,8 +1015,7 @@ export class Beliefs {
         this.world = new World();
         this.partner = new Partner(this.me);
 
-        // Not sensing, but read by desire generation, pathfinding and intention revision,
-        // all of which already receive beliefs. See the RuleStore comment for the trade-off.
+        // Desires and pathfinding read this same local strategy on every BDI cycle.
         this.rules = new RuleStore();
     }
 
@@ -1089,11 +1088,15 @@ export class Beliefs {
                 return;
             }
 
-            // A rule the partner was told about binds this agent too. It goes through the same
-            // door as a rule from our own tools, so the two can never come to disagree about
-            // which shapes are legal. A rule that does not validate is dropped in silence.
-            if (message.kind === 'rule') {
-                applyRule(this.rules, message.rule);
+            // Scope controls where the same normalized operation is applied.
+            // The receiver stores it locally and does not send it back.
+            if (message.kind === 'strategy') {
+                applyStrategyOperation(this.rules, message.operation);
+                return;
+            }
+
+            if (message.kind === 'hold') {
+                this.rules.setHold(message.hold);
                 return;
             }
 
