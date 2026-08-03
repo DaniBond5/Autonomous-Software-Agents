@@ -1,20 +1,11 @@
 import config from "../config.js";
 import { executeAction } from "../bdi/execution.js";
-import { wait } from "../bdi/loop.js";
 import { applyRule } from "../bdi/rules.js";
 import { describeState } from "./memory.js";
 
 const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
 };
-
-// A walk that has not arrived in this many actions is stuck behind something
-// the planner keeps routing around. Ending it returns control to the model,
-// which can then try another tile instead of blocking the whole mission.
-const MAX_WALK_STEPS = 60;
-
-// Same breather the BDI loop takes after an action that changed nothing.
-const IDLE_WAIT_MS = 200;
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
@@ -108,18 +99,25 @@ function parseHold(input) {
 export class LLMExecutor {
     /**
      * @param {{beliefs: import("../bdi/beliefs.js").Beliefs,
-     *          planner: import("../bdi/planning.js").Planner,
      *          socket: object,
-     *          memory: import("./memory.js").LLMMemory}} parts
+     *          memory: import("./memory.js").LLMMemory,
+     *          objectives: import("../bdi/objectives.js").ObjectiveStore}} parts
      */
-    constructor({ beliefs, planner, socket, memory }) {
+    constructor({ beliefs, socket, memory, objectives }) {
         this.beliefs = beliefs;
-        this.planner = planner;
         this.socket = socket;
         this.memory = memory;
+        this.objectives = objectives;
 
-        /** True while a mission is running, which is when the BDI loop stands down. */
+        /** True while the LLM is processing a mission. */
         this.onMission = false;
+
+        /** Temporary guard while pickup and putdown still use the shared socket directly. */
+        this.directActionRunning = false;
+
+        // A direct action may start and finish while BDI planning is still running.
+        // The revision lets the loop detect that change after the action has ended.
+        this._directActionRevision = 0;
 
         /** Who sent the current mission, so replies go back to them. */
         this.senderId = null;
@@ -136,7 +134,7 @@ export class LLMExecutor {
                 description: "Walk to a tile. Input is the pair of coordinates, "
                     + "for example 4,7. Returns when you arrive or when the tile "
                     + "cannot be reached.",
-                run: input => this.walkTo(input),
+                run: input => this.goTo(input),
             },
             pick_up: {
                 description: "Pick up the parcels lying on the tile you are "
@@ -238,12 +236,25 @@ export class LLMExecutor {
     }
 
     /**
-     * Starts a mission: the BDI loop stands down until a tool ends it.
+     * Starts a mission without taking movement control away from the BDI loop.
      * @param {string | null} senderId who asked, or null for the default goal
      */
     beginMission(senderId) {
         this.onMission = true;
         this.senderId = senderId;
+    }
+
+    get isDirectActionRunning() {
+        return this.directActionRunning;
+    }
+
+    get directActionRevision() {
+        return this._directActionRevision;
+    }
+
+    /** @param {string} reason */
+    cancelActiveObjective(reason) {
+        return this.objectives.cancelActive(reason);
     }
 
     /**
@@ -288,36 +299,23 @@ export class LLMExecutor {
     }
 
     /**
-     * Walks to a tile with the Part A planner, one action at a time.
-     * The intention is the one the plan library already knows how to serve
-     * without a terminal action, so BFS, detours and the crate planner come
-     * for free.
+     * Publishes a tile objective and waits for the BDI loop to report its result.
      * @param {string} input
      * @returns {Promise<string>}
      */
-    async walkTo(input) {
+    async goTo(input) {
         const target = parseTile(input);
         if (!target) return `cannot read "${input}" as a tile: write it as x,y`;
 
-        const intention = { type: "go_to_tile", target, utility: 0 };
-        for (let step = 0; step < MAX_WALK_STEPS; step += 1) {
-            const plan = await this.planner.planNextAction(intention, this.beliefs);
-
-            if (plan.status === "idle") return `arrived at (${target.x},${target.y})`;
-            if (plan.status === "unreachable" || plan.status === "deferred") {
-                return `cannot reach (${target.x},${target.y}): ${plan.reason}`;
-            }
-            if (plan.status === "wait") {
-                await wait(IDLE_WAIT_MS);
-                continue;
-            }
-
-            const outcome = await executeAction(plan.action, this.beliefs, this.socket);
-            this.beliefs.crates.reconcileActionOutcome(outcome);
-            this.planner.reconcilePlanningOutcome(outcome, this.beliefs);
-            if (outcome.status !== "succeeded") await wait(IDLE_WAIT_MS);
+        const { completion } = this.objectives.requestGoTo(target);
+        const result = await completion;
+        if (result.status === "succeeded") {
+            return `reached (${target.x},${target.y})`;
         }
-        return `gave up walking to (${target.x},${target.y}) after ${MAX_WALK_STEPS} steps`;
+        if (result.status === "failed") {
+            return `cannot reach (${target.x},${target.y}): ${result.reason}`;
+        }
+        return `go_to (${target.x},${target.y}) was cancelled: ${result.reason}`;
     }
 
     /**
@@ -326,20 +324,26 @@ export class LLMExecutor {
      * @returns {Promise<string>}
      */
     async act(type) {
-        const outcome = await executeAction({ action: type }, this.beliefs, this.socket);
-        this.beliefs.parcels.reconcileActionOutcome(
-            outcome,
-            this.beliefs.me.id,
-            this.beliefs.me.pos
-        );
-        const here = `(${this.beliefs.me.pos.x},${this.beliefs.me.pos.y})`;
-        if (outcome.status !== "succeeded") {
-            return type === "pickup"
-                ? `nothing to pick up at ${here}`
-                : `nothing to put down at ${here}`;
+        this._directActionRevision += 1;
+        this.directActionRunning = true;
+        try {
+            const outcome = await executeAction({ action: type }, this.beliefs, this.socket);
+            this.beliefs.parcels.reconcileActionOutcome(
+                outcome,
+                this.beliefs.me.id,
+                this.beliefs.me.pos
+            );
+            const here = `(${this.beliefs.me.pos.x},${this.beliefs.me.pos.y})`;
+            if (outcome.status !== "succeeded") {
+                return type === "pickup"
+                    ? `nothing to pick up at ${here}`
+                    : `nothing to put down at ${here}`;
+            }
+            return `${type === "pickup" ? "picked up" : "put down"} `
+                + `${outcome.result.length} parcels at ${here}`;
+        } finally {
+            this.directActionRunning = false;
         }
-        return `${type === "pickup" ? "picked up" : "put down"} `
-            + `${outcome.result.length} parcels at ${here}`;
     }
 
     /**

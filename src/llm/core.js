@@ -65,6 +65,7 @@ export class LLMAgent {
             // replanner is told about: a goal arriving with nothing running simply starts
             // a mission, and there is no approach yet to reconsider.
             this.memory.noteGoalReplaced();
+            this.executor.cancelActiveObjective("mission replaced");
             this.planner.abort();
             return;
         }

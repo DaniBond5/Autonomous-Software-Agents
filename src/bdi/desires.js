@@ -15,6 +15,7 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  * @property {number} utility  - score from the utility functions
  * @property {number} [distance] - current BFS distance from the agent to the target
  * @property {string} [id]     - parcel id, ONLY for go_pick_up (used for intention revision)
+ * @property {string} [objectiveId] - explicit objective identity, only for external goals
  */
 
 /**
@@ -24,7 +25,8 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  * @returns {string} the desire identity
  */
 export function desireKey(desire) {
-    return `${desire.type}:${desire.id ?? ''}:${desire.target.x},${desire.target.y}`;
+    const identity = desire.objectiveId ?? desire.id ?? '';
+    return `${desire.type}:${identity}:${desire.target.x},${desire.target.y}`;
 }
 
 /**
@@ -166,9 +168,10 @@ function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
  * Desires are ephemeral data, regenerated every cycle.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {boolean} [ignoreAvoided=false] set by the retry at the bottom of this function
+ * @param {import("./objectives.js").ObjectiveStore | null} [objectives=null]
  * @returns {Desire[]} the generated desires.
  */
-export function generateDesires(beliefs, ignoreAvoided = false) {
+export function generateDesires(beliefs, ignoreAvoided = false, objectives = null) {
     const desires = [];
     const knownParcels = beliefs.parcels.availableKnown(beliefs.world.localDecayIntervalMs);
     const agentPaths = shortestPathsFrom(beliefs, beliefs.me.pos, { ignoreAvoided });
@@ -272,13 +275,17 @@ export function generateDesires(beliefs, ignoreAvoided = false) {
     // holds whatever else the agent has to do, and it competes on utility like anything else.
     desires.push(...beliefs.rules.injectedDesires());
 
+    // The BDI loop reads the objective published by the LLM as a normal desire.
+    const objectiveDesire = objectives?.getActiveDesire();
+    if (objectiveDesire) desires.push(objectiveDesire);
+
     // An avoided tile is a hard exclusion in the search, and one tile in a corridor can cut the
     // map in two and leave the agent with nothing reachable and nothing to want. Rather than
     // stand still, plan the cycle again with the avoidance lifted: when the only route crosses
     // the tile the agent crosses it, which is the call a soft penalty would arrive at anyway.
     // One retry only, since the flag is set on the way in.
     if (desires.length === 0 && !ignoreAvoided && beliefs.rules.hasAvoided) {
-        return generateDesires(beliefs, true);
+        return generateDesires(beliefs, true, objectives);
     }
 
     return desires;
