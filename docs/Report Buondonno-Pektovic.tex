@@ -1,0 +1,99 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{geometry}
+\geometry{a4paper, margin=2.5cm, top=3cm, bottom=3cm}
+\usepackage{fancyhdr}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{float}
+\usepackage{multicol}
+
+% ==========================================
+% Header and Footer Configuration
+% ==========================================
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\small [Università di Trento]}
+\rhead{\small [Autonomous Software Agents / Artificial Intelligent Systems]}
+\cfoot{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+% ==========================================
+% Title and Author Data
+% ==========================================
+\title{\textbf{[Autonomous Software Agents Project Report]}}
+\author{
+    \begin{tabular}{c}
+        \textbf{Daniele Buondonno} \\
+        {267888} \\
+        \href{mailto:email1@daniele.buondonno@studenti.unitn.it}{email1@daniele.buondonno@studenti.unitn.it}
+    \end{tabular}
+    \and
+    \begin{tabular}{c}
+        \textbf{Sasha Pektovic} \\
+        {264689} \\
+        \href{mailto:email2@sasha.pektovic@studenti.unitn.it}{email2@sasha.pektovic@studenti.unitn.it}
+    \end{tabular}
+}
+\date{\vspace{-5ex}} % Adjust or remove to display date
+
+\begin{document}
+
+\maketitle
+\thispagestyle{fancy} % Force header on the first page
+
+% ==========================================
+% Abstract
+% ==========================================
+\begin{abstract}
+\noindent [Insert abstract here. Summarize the objectives, methodology, and main outcomes of the project.]
+\end{abstract}
+
+% ==========================================
+% Body of the Report
+% ==========================================
+
+\section{Introduction}
+[Insert introduction text here. Outline the problem, the context, and the structure of the report.]
+
+\section{Belief}
+[Insert description of the agent's perception and belief systems.]
+
+\section{Desires and Intention Loop}
+[Describe the general loop architecture.]
+
+\subsection{Desires Generation}
+[Describe how options are evaluated.]
+
+\subsubsection{Pick-up Utility}
+[Insert utility calculation logic.]
+
+\subsubsection{Put-down Utility}
+[Insert utility calculation logic.]
+
+\subsubsection{Exploration Utility}
+[]
+
+\subsection{Intention Loop and Intention Revision}
+[Insert text explaining intention revision.]
+
+\section{Planning}
+[Describe the pathfinding and action planning.]
+
+\subsection{PDDL}
+[Insert text.]
+
+\section{LLM Agent}
+[Describe the multi-agent communication protocol.]
+
+\section{Results and Conclusions}
+[Present the results of the project.]
+
+\section{Conclusions and future improvements}
+[Conclude the report and propose future developments.]
+
+\end{document}

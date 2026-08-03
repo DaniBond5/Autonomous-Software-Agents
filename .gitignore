@@ -3,3 +3,8 @@ node_modules/
 
 # dotenv file
 .env
+
+# LaTeX report, LaTeX working files.
+docs/*
+!docs/Report Buondonno-Pektovic.pdf
+!docs/Report Buondonno-Pektovic.tex
