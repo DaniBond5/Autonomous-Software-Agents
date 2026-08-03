@@ -8,7 +8,7 @@ import { LLMMemory } from "./llm/memory.js";
 import { LLMPlanner } from "./llm/planner.js";
 import { LLMReplanner } from "./llm/replanner.js";
 import { LLMExecutor } from "./llm/executor.js";
-import { LLMAgent, DEFAULT_GOAL } from "./llm/core.js";
+import { LLMAgent } from "./llm/core.js";
 
 /**
  * Reads the text out of a chat message. The server passes on whatever the
@@ -72,12 +72,6 @@ export function startLlmAgent(socket) {
         replanner: new LLMReplanner(),
     });
 
-    const setGoal = (goal, senderId) => {
-        agent.setGoal(goal, senderId).catch(error =>
-            console.error("[llm] goal abandoned:", error)
-        );
-    };
-
     socket.onMsg((id, name, message) => {
         // The partner talks on this same channel. The sender check is the point, the shape check
         // covers the window before the launcher has handed over the partner's id.
@@ -87,12 +81,13 @@ export function startLlmAgent(socket) {
         if (!text) return;
         if (!isMissionSender(id, name)) return;
         console.log(`[llm] mission from ${name}: ${text}`);
-        setGoal(text, id);
+        try {
+            agent.enqueueMission(text, id);
+        } catch (error) {
+            console.error("[llm] mission refused:", error);
+        }
     });
 
-    // The first goal is ordinary play, and it travels the same path a mission
-    // would. The agent reads it and hands itself over to the BDI loop below.
-    setGoal(DEFAULT_GOAL, null);
     runAgentLoop(beliefs, planner, socket, {
         objectives,
     }).catch((error) => {

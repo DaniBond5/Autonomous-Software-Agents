@@ -70,24 +70,29 @@ export class LLMMemory {
         /** @type {string[]} */
         this.history = [];
 
-        /**
-         * What the replanner watches: the last observed world, kept to tell a real change
-         * from noise, and the two events that happen rather than persist. Each field is read
-         * and cleared by its own reader below, so one event replans once.
-         */
+        /** What the replanner watches between turns of one mission. */
         this.snapshot = {
             carried: beliefs.parcels.carried.size,
             failedTool: null,
-            goalReplaced: false,
         };
     }
 
     /**
-     * @param {string} goal the goal in natural language
+     * Opens fresh working memory for one mission.
+     * @param {string} goal the mission in natural language
      */
-    setGoal(goal) {
+    startMission(goal) {
         this.goal = goal;
+        this.history = [];
+        this._resetMissionEvents();
         this.remember(`new goal: ${goal}`);
+    }
+
+    /** Clears mission text and transient events while preserving game state. */
+    finishMission() {
+        this.goal = "";
+        this.history = [];
+        this._resetMissionEvents();
     }
 
     /**
@@ -100,29 +105,9 @@ export class LLMMemory {
         this.snapshot.failedTool = name;
     }
 
-    /**
-     * Records that a goal arrived while another was being worked on.
-     * Only that case counts. Setting a goal with nothing running is the start of a mission,
-     * and there is no plan yet to reconsider; the end of every mission sets the default goal
-     * too, and marking that would make the next mission replan on its first turn for the rest
-     * of the game.
-     */
-    noteGoalReplaced() {
-        this.snapshot.goalReplaced = true;
-    }
-
-    /**
-     * Drops the changes still waiting to be reported, and takes the world as it stands now.
-     *
-     * These fields describe what happened inside one mission, so they end with it. A trigger
-     * raised during the last turn has no next turn to be read in: the check that would have
-     * read it runs at the start of a turn, and tools run during one. Carried across, it would
-     * open the following mission by asking the model to reconsider an approach belonging to
-     * work that is already over.
-     */
-    forgetPendingChanges() {
+    /** Drops pending events and takes the current carried count as the baseline. */
+    _resetMissionEvents() {
         this.snapshot.failedTool = null;
-        this.snapshot.goalReplaced = false;
         this.snapshot.carried = this.beliefs.parcels.carried.size;
     }
 
@@ -184,16 +169,5 @@ export class LLMMemory {
         const failedTool = this.snapshot.failedTool;
         this.snapshot.failedTool = null;
         return failedTool;
-    }
-
-    /**
-     * Whether a new goal replaced the one being worked on since this was last asked.
-     * Cleared here, like the checks above, so one replacement is reported once.
-     * @returns {boolean}
-     */
-    hasGoalChanged() {
-        const goalReplaced = this.snapshot.goalReplaced;
-        this.snapshot.goalReplaced = false;
-        return goalReplaced;
     }
 }

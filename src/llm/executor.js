@@ -108,12 +108,6 @@ export class LLMExecutor {
         this.memory = memory;
         this.objectives = objectives;
 
-        /** True while the LLM is processing a mission. */
-        this.onMission = false;
-
-        /** Who sent the current mission, so replies go back to them. */
-        this.senderId = null;
-
         this.tools = {
             get_state: {
                 description: "Read the game state: your position and score, the "
@@ -149,11 +143,8 @@ export class LLMExecutor {
                         : `${input} = ${value}`;
                 },
             },
-            // The five tools below do not take the game over: they write a rule into the
-            // deliberation the agent already runs, and the agent keeps playing on its own with
-            // the rule in force. A mission that changes the rules of the game is therefore
-            // read it, register it, reply, resume_autonomous, and the agent plays on. That is
-            // the difference from a mission that is a list of moves, which the tools above do.
+            // The five tools below change normal BDI deliberation without taking it over.
+            // Their rules stay in force after the mission ends.
             set_scoring_rule: {
                 description: "Change how rewards are scored, for a mission that holds for the "
                     + "rest of the game. Input is one JSON object. The axes are stack_count "
@@ -203,56 +194,30 @@ export class LLMExecutor {
                         : `lifted ${lifted} rules: scoring is back to normal`;
                 },
             },
-            reply: {
-                description: "Send a message in the chat to the player who gave "
-                    + "you the mission. Input is the text to send.",
-                run: input => this.reply(input),
-            },
-            resume_autonomous: {
-                description: "End the mission and go back to playing on your own. "
-                    + "Use it once the mission is done, or when there is no "
-                    + "mission to do.",
-                run: async () => this.leaveMission("mission finished"),
-            },
-            decline_mission: {
-                description: "Refuse the mission and go back to playing on your "
-                    + "own. Input is why it is not worth doing, for example a "
-                    + "negative reward or a walk too long for what it pays.",
-                run: async input => {
-                    const reason = String(input ?? "").trim() || "not worth it";
-                    if (this.senderId) await this.reply(`Declining: ${reason}`);
-                    return this.leaveMission(`mission declined: ${reason}`);
-                },
-            },
         };
     }
 
-    /**
-     * Starts a mission without taking movement control away from the BDI loop.
-     * @param {string | null} senderId who asked, or null for the default goal
-     */
-    beginMission(senderId) {
-        this.onMission = true;
-        this.senderId = senderId;
-    }
-
     /** @param {string} reason */
-    cancelActiveObjective(reason) {
+    cancelPendingObjective(reason) {
         return this.objectives.cancelActive(reason);
     }
 
     /**
-     * Hands control back to the BDI loop. Both exits go through here, but they
-     * keep separate names in the log: a mission that was done and one that was
-     * turned down are different decisions.
-     * @param {string} reason
-     * @returns {string}
+     * Sends the final mission result to its immutable sender.
+     * @param {string} senderId
+     * @param {string} message
+     * @returns {Promise<string>}
      */
-    leaveMission(reason) {
-        console.log(`[llm] ${reason}: back to autonomous play`);
-        this.onMission = false;
-        this.senderId = null;
-        return `${reason}. Now playing autonomously.`;
+    async replyTo(senderId, message) {
+        if (typeof senderId !== "string" || !senderId.trim()) {
+            throw new TypeError("mission sender must be a non-empty string");
+        }
+        if (typeof message !== "string" || !message.trim()) {
+            throw new TypeError("mission reply must be a non-empty string");
+        }
+
+        const status = await this.socket.emitSay(senderId, message.trim());
+        return `message sent (${status})`;
     }
 
     /**
@@ -383,18 +348,6 @@ export class LLMExecutor {
         return `asked the other agent to wait at (${hold.x},${hold.y}) `
             + `for ${hold.seconds} seconds`;
     }
-
-    /**
-     * @param {string} message
-     * @returns {Promise<string>}
-     */
-    async reply(message) {
-        const text = String(message ?? "").trim();
-        if (!text) return "nothing to say: the message was empty";
-        if (!this.senderId) return "nobody to reply to: this goal came from no one";
-        const status = await this.socket.emitSay(this.senderId, text);
-        return `message sent (${status})`;
-    }
 }
 
 // The prompt lives next to the registry above because it is written from it.
@@ -422,12 +375,12 @@ Tiles are addressed as x,y. x grows to the right and y grows upwards, both from 
 Your tools:
 ${tools}
 
-Decide whether a mission is worth doing before you start it. You are giving up
-ordinary play to run it, so it has to pay for itself:
+Decide whether a mission is worth doing before taking action:
 - a mission that awards negative points is never worth doing;
 - a mission whose walk is long compared to what it pays is not worth doing
   either, because delivering ordinary parcels in that time pays more;
-- when a mission is not worth it, call decline_mission and say why.
+- when a mission is not worth it, use a brief Final Answer starting with
+  "Declining:" and say why.
 Missions sometimes write a coordinate as a calculation, such as x=4*2. Work it
 out with calculate rather than in your head.
 
@@ -443,6 +396,7 @@ Thought: <what you concluded>
 Final Answer: <a short summary of what you did>
 
 Take one step at a time. After each action you are given its result, and then
-you choose the next step. End every mission with resume_autonomous or
-decline_mission, so you go back to playing on your own.`;
+you choose the next step. Use Final Answer only when the mission is complete or
+you decline it. The runtime sends that answer to the mission sender and closes
+the mission automatically.`;
 }
