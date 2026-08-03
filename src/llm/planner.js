@@ -127,13 +127,33 @@ export class LLMPlanner {
                     return { status: "answered", answer: step.answer };
                 }
 
-                const observation = await executor.run(step.action, step.input);
-                dbg(`observation: ${observation}`);
-                // The observation goes to memory and back into the conversation:
-                // memory so the next turn knows it, the conversation so this one
-                // can react to it. That is what closes the loop.
-                memory.remember(`${step.action} ${step.input} -> ${observation}`);
-                messages.push({ role: "user", content: `Observation: ${observation}` });
+                /** @type {import("./executor.js").ToolExecutionResult} */
+                const result = await executor.run(step.action, step.input);
+                const validSuccess = result?.ok === true
+                    && result.replanReason === null;
+                const validFailure = result?.ok === false
+                    && typeof result.replanReason === "string"
+                    && Boolean(result.replanReason.trim());
+                if ((!validSuccess && !validFailure)
+                    || typeof result?.observation !== "string"
+                    || !result.observation.trim()) {
+                    throw new TypeError("executor returned an invalid tool result");
+                }
+
+                dbg(`observation: ${result.observation}`);
+                // The model sees only the observation. A separate reason tells the
+                // replanner why the previous step cannot continue.
+                memory.remember(
+                    `${step.action} ${step.input} -> ${result.observation}`
+                );
+                messages.push({
+                    role: "user",
+                    content: `Observation: ${result.observation}`,
+                });
+                if (result.replanReason) {
+                    memory.requestReplan(result.replanReason);
+                    return { status: "acted" };
+                }
                 break;
             }
         }

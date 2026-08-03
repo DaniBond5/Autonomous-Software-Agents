@@ -1,24 +1,14 @@
 /**
- * Decides when a plan has to be rebuilt, and says why.
- * The reason is written into the history, which is part of the context, so the
- * model reads what changed before it plans again instead of starting over
- * blind. This is the reflection step of the agent.
+ * Consumes one semantic failure and asks the model for another approach.
  */
 export class LLMReplanner {
     /**
-     * Whether anything has happened that the model should reconsider its approach over.
+     * Returns one concrete reason, then removes it from memory.
      * @param {import("./memory.js").LLMMemory} memory
      * @returns {string | null} why to replan, or null when nothing changed
      */
     shouldReplan(memory) {
-        // Both are read because each check refreshes its own pending state.
-        const failedTool = memory.hasToolFailed();
-        const worldChanged = memory.hasWorldChanged();
-
-        // A failed tool invalidates the approach more directly than a changed parcel count.
-        if (failedTool) return `the ${failedTool} tool failed`;
-        if (worldChanged) return `you are now carrying ${memory.snapshot.carried} parcels`;
-        return null;
+        return memory.takeReplanReason();
     }
 
     /**
@@ -33,10 +23,10 @@ export class LLMReplanner {
      */
     async replan(memory, planner, executor, reason) {
         console.log(`[llm] replanning: ${reason}`);
-        // Phrased as an instruction rather than a note, because this sentence is the whole of
-        // the reflection step: the model reads it in the next context and is asked to question
-        // its approach, instead of quietly trying again what has just stopped working.
-        memory.remember(`${reason}. Reconsider whether your approach still holds.`);
+        memory.remember(
+            `The previous step could not be completed: ${reason}. `
+            + "Choose a different valid approach."
+        );
         return planner.runTurn(memory, executor);
     }
 }

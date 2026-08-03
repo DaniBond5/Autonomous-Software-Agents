@@ -53,8 +53,8 @@ export function describeState(beliefs) {
 }
 
 /**
- * The working memory of the LLM agent: current goal, world snapshot and the
- * events of the recent past. It is rebuilt into a prompt on every turn rather
+ * The working memory of the LLM agent: current goal, recent events and one
+ * pending replan reason. It is rebuilt into a prompt on every turn rather
  * than accumulated, so the context stays the same size all game long.
  */
 export class LLMMemory {
@@ -70,11 +70,8 @@ export class LLMMemory {
         /** @type {string[]} */
         this.history = [];
 
-        /** What the replanner watches between turns of one mission. */
-        this.snapshot = {
-            carried: beliefs.parcels.carried.size,
-            failedTool: null,
-        };
+        /** @type {string | null} */
+        this.pendingReplanReason = null;
     }
 
     /**
@@ -84,7 +81,7 @@ export class LLMMemory {
     startMission(goal) {
         this.goal = goal;
         this.history = [];
-        this._resetMissionEvents();
+        this.pendingReplanReason = null;
         this.remember(`new goal: ${goal}`);
     }
 
@@ -92,23 +89,28 @@ export class LLMMemory {
     finishMission() {
         this.goal = "";
         this.history = [];
-        this._resetMissionEvents();
+        this.pendingReplanReason = null;
     }
 
     /**
-     * Records a tool that failed for a reason it did not choose: it threw, or there is no
-     * such tool. A tool that returns a message explaining why it could not do something has
-     * done its job, and marking those would replan on almost every turn.
-     * @param {string} name
+     * Stores the first valid semantic failure that has not been handled yet.
+     * @param {string} reason
      */
-    noteToolFailure(name) {
-        this.snapshot.failedTool = name;
+    requestReplan(reason) {
+        if (typeof reason !== "string" || !reason.trim()) return;
+        if (this.pendingReplanReason === null) {
+            this.pendingReplanReason = reason.trim();
+        }
     }
 
-    /** Drops pending events and takes the current carried count as the baseline. */
-    _resetMissionEvents() {
-        this.snapshot.failedTool = null;
-        this.snapshot.carried = this.beliefs.parcels.carried.size;
+    /**
+     * Returns one pending reason and removes it from memory.
+     * @returns {string | null}
+     */
+    takeReplanReason() {
+        const reason = this.pendingReplanReason;
+        this.pendingReplanReason = null;
+        return reason;
     }
 
     /**
@@ -142,32 +144,5 @@ export class LLMMemory {
             "What happened recently:",
             recent.map(event => `- ${event}`).join("\n") || "- nothing yet",
         ].join("\n");
-    }
-
-    /**
-     * Whether the world moved enough to be worth a new plan.
-     * The test is deliberately narrow: a sensitive one would replan on every
-     * parcel that decays a point and hammer the model with calls. Carrying a
-     * different number of parcels is the change that actually invalidates a
-     * plan built around picking up or delivering.
-     * The snapshot is refreshed here, so a change is reported once.
-     * @returns {boolean}
-     */
-    hasWorldChanged() {
-        const carried = this.beliefs.parcels.carried.size;
-        if (carried === this.snapshot.carried) return false;
-        this.snapshot.carried = carried;
-        return true;
-    }
-
-    /**
-     * Which tool failed since this was last asked, if one did.
-     * Cleared here, like the check above, so one failure is reported once.
-     * @returns {string | null} the tool's name, or null when none failed
-     */
-    hasToolFailed() {
-        const failedTool = this.snapshot.failedTool;
-        this.snapshot.failedTool = null;
-        return failedTool;
     }
 }

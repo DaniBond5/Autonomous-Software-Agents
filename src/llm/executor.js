@@ -6,6 +6,40 @@ const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
 };
 
+/**
+ * @typedef {Object} ToolExecutionResult
+ * @property {boolean} ok
+ * @property {string} observation
+ * @property {string | null} replanReason
+ */
+
+/** @param {string} observation @returns {ToolExecutionResult} */
+function success(observation) {
+    if (typeof observation !== "string") {
+        throw new TypeError("a successful tool result needs a string observation");
+    }
+    const text = observation.trim();
+    if (!text) throw new TypeError("a successful tool result needs an observation");
+    return { ok: true, observation: text, replanReason: null };
+}
+
+/**
+ * @param {string} observation
+ * @param {string} replanReason
+ * @returns {ToolExecutionResult}
+ */
+function failure(observation, replanReason) {
+    if (typeof observation !== "string" || typeof replanReason !== "string") {
+        throw new TypeError("a failed tool result needs string fields");
+    }
+    const text = observation.trim();
+    const reason = replanReason.trim();
+    if (!text || !reason) {
+        throw new TypeError("a failed tool result needs an observation and a replan reason");
+    }
+    return { ok: false, observation: text, replanReason: reason };
+}
+
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
 
@@ -81,31 +115,30 @@ function parseTile(input) {
 function parseHold(input) {
     const numbers = String(input ?? "").match(/-?\d+/g);
     if (!numbers || numbers.length < 3) return null;
-    return {
+    const hold = {
         x: Number(numbers[0]),
         y: Number(numbers[1]),
         seconds: Number(numbers[2])
     };
+    return hold.seconds > 0 ? hold : null;
 }
 
 /**
  * The tools the model can call, and the only place they are described.
  * The system prompt is generated from this registry, so a new tool becomes
  * available to the model as soon as it is added here.
- * Every tool returns a string, because that string is the observation the
- * model reads next. A tool that fails says so instead of throwing.
+ * Every tool returns a structured result. The model sees the observation,
+ * while a semantic failure also gives the planner one clear replan reason.
  */
 export class LLMExecutor {
     /**
      * @param {{beliefs: import("../bdi/beliefs.js").Beliefs,
      *          socket: object,
-     *          memory: import("./memory.js").LLMMemory,
      *          objectives: import("../bdi/objectives.js").ObjectiveStore}} parts
      */
-    constructor({ beliefs, socket, memory, objectives }) {
+    constructor({ beliefs, socket, objectives }) {
         this.beliefs = beliefs;
         this.socket = socket;
-        this.memory = memory;
         this.objectives = objectives;
 
         this.tools = {
@@ -114,7 +147,7 @@ export class LLMExecutor {
                     + "parcels you carry, the parcels and delivery tiles you can "
                     + "see, and the size of the map. Use it before deciding "
                     + "anything that depends on where things are.",
-                run: async () => describeState(this.beliefs),
+                run: async () => success(describeState(this.beliefs)),
             },
             go_to: {
                 description: "Walk to a tile. Input is the pair of coordinates, "
@@ -137,10 +170,14 @@ export class LLMExecutor {
                     + "4*2+1. Use it whenever a mission gives a coordinate as a "
                     + "sum or a product instead of a number.",
                 run: async input => {
-                    const value = evaluateExpression(input);
+                    const expression = typeof input === "string" ? input : "";
+                    const value = evaluateExpression(expression);
                     return value === null
-                        ? `cannot compute "${input}": only numbers, + - * / and parentheses are allowed`
-                        : `${input} = ${value}`;
+                        ? failure(
+                            `Cannot compute "${expression}": only numbers, + - * / and parentheses are allowed.`,
+                            "the calculation input was invalid"
+                        )
+                        : success(`${expression} = ${value}`);
                 },
             },
             // The five tools below change normal BDI deliberation without taking it over.
@@ -167,9 +204,14 @@ export class LLMExecutor {
                     + "still cross it if that is the only way to reach anything at all.",
                 run: async input => {
                     const tile = parseTile(input);
-                    if (!tile) return `cannot read "${input}" as a tile: write it as x,y`;
+                    if (!tile) {
+                        return failure(
+                            `Cannot read "${input}" as a tile. Write it as x,y.`,
+                            "the avoid_tile input was not a valid tile"
+                        );
+                    }
                     this.beliefs.rules.avoidTile(tile);
-                    return `avoiding (${tile.x},${tile.y}) from now on`;
+                    return success(`Avoiding (${tile.x},${tile.y}) from now on.`);
                 },
             },
             hold_at: {
@@ -189,9 +231,9 @@ export class LLMExecutor {
                     + "scoring. Takes no input. Use it when a mission is called off.",
                 run: async () => {
                     const lifted = this.beliefs.rules.clear();
-                    return lifted === 0
+                    return success(lifted === 0
                         ? "there were no rules to lift"
-                        : `lifted ${lifted} rules: scoring is back to normal`;
+                        : `lifted ${lifted} rules: scoring is back to normal`);
                 },
             },
         };
@@ -221,81 +263,144 @@ export class LLMExecutor {
     }
 
     /**
-     * Runs one tool and returns its observation.
-     * Nothing thrown here reaches the planner: a broken tool is one more
-     * observation to reason about, not a crashed turn.
+     * Runs one known tool and checks that it returned a consistent result.
+     * Unexpected errors are logged here but only a safe observation reaches the model.
      * @param {string} name
      * @param {string} input
-     * @returns {Promise<string>}
+     * @returns {Promise<ToolExecutionResult>}
      */
     async run(name, input) {
-        const tool = this.tools[name];
-        // The two failures a tool did not choose are marked for the replanner. Both mean the
-        // model asked for something that could not happen, which is worth a fresh look at the
-        // plan rather than a quiet retry of the same call.
-        if (!tool) {
-            this.memory.noteToolFailure(name);
-            return `there is no tool called "${name}". `
-                + `Available tools: ${Object.keys(this.tools).join(", ")}`;
+        const toolName = typeof name === "string" ? name.trim() : "";
+        if (!toolName || !Object.hasOwn(this.tools, toolName)) {
+            const shownName = toolName || "(empty)";
+            return failure(
+                `Unknown tool: ${shownName}. Available tools: ${Object.keys(this.tools).join(", ")}.`,
+                toolName
+                    ? `the selected tool "${toolName}" does not exist`
+                    : "the selected tool name was invalid"
+            );
         }
-        dbg(`${name}(${input ?? ""})`);
+
+        const tool = this.tools[toolName];
+        dbg(`${toolName}(${input ?? ""})`);
         try {
-            return await tool.run(input);
+            const result = await tool.run(input);
+            const validSuccess = result?.ok === true
+                && result.replanReason === null;
+            const validFailure = result?.ok === false
+                && typeof result.replanReason === "string"
+                && Boolean(result.replanReason.trim());
+            if ((!validSuccess && !validFailure)
+                || typeof result?.observation !== "string"
+                || !result.observation.trim()) {
+                throw new TypeError(`${toolName} returned an invalid tool result`);
+            }
+            return result;
         } catch (error) {
-            this.memory.noteToolFailure(name);
-            return `${name} failed: ${error instanceof Error ? error.message : String(error)}`;
+            console.error(`[llm] ${toolName} tool failed unexpectedly:`, error);
+            return failure(
+                "The tool failed because of an internal error.",
+                `the ${toolName} tool failed unexpectedly`
+            );
         }
     }
 
     /**
      * Publishes a tile objective and waits for the BDI loop to report its result.
      * @param {string} input
-     * @returns {Promise<string>}
+     * @returns {Promise<ToolExecutionResult>}
      */
     async goTo(input) {
         const target = parseTile(input);
-        if (!target) return `cannot read "${input}" as a tile: write it as x,y`;
+        if (!target) {
+            return failure(
+                `Cannot read "${input}" as a tile. Write it as x,y.`,
+                "the go_to input was not a valid tile"
+            );
+        }
 
         const { completion } = this.objectives.requestGoTo(target);
         const result = await completion;
         if (result.status === "succeeded") {
-            return `reached (${target.x},${target.y})`;
+            return success(`Reached (${target.x},${target.y}).`);
         }
         if (result.status === "failed") {
-            return `cannot reach (${target.x},${target.y}): ${result.reason}`;
+            const reason = String(result.reason || "no path was found").trim();
+            return failure(
+                `Cannot reach (${target.x},${target.y}): ${reason}`,
+                `the target tile (${target.x},${target.y}) could not be reached: ${reason}`
+            );
         }
-        return `go_to (${target.x},${target.y}) was cancelled: ${result.reason}`;
+        if (result.status === "cancelled") {
+            const reason = String(result.reason || "the objective was cancelled").trim();
+            return failure(
+                `Go-to (${target.x},${target.y}) was cancelled: ${reason}`,
+                `the go_to objective for (${target.x},${target.y}) was cancelled: ${reason}`
+            );
+        }
+        throw new TypeError("go_to received an unknown objective result");
     }
 
     /**
      * Requests one pickup and waits for the BDI loop to return the server result.
-     * @returns {Promise<string>}
+     * @returns {Promise<ToolExecutionResult>}
      */
     async pickUp() {
         const { completion } = this.objectives.requestPickup();
         const result = await completion;
-        if (result.status === "succeeded") return result.reason;
-        if (result.status === "failed") return `pickup failed: ${result.reason}`;
-        return `pickup was cancelled: ${result.reason}`;
+        if (result.status === "succeeded") return success(result.reason);
+        if (result.status === "failed") {
+            const reason = String(result.reason || "pickup failed").trim();
+            return failure(
+                `Pickup failed: ${reason}`,
+                reason === "no parcels were picked up"
+                    ? "there were no parcels available on the current tile"
+                    : `the pickup could not be completed: ${reason}`
+            );
+        }
+        if (result.status === "cancelled") {
+            const reason = String(result.reason || "the objective was cancelled").trim();
+            return failure(
+                `Pickup was cancelled: ${reason}`,
+                `the pickup objective was cancelled: ${reason}`
+            );
+        }
+        throw new TypeError("pick_up received an unknown objective result");
     }
 
     /**
      * Requests one putdown and waits for the BDI loop to return the server result.
-     * @returns {Promise<string>}
+     * @returns {Promise<ToolExecutionResult>}
      */
     async putDown() {
         const { completion } = this.objectives.requestPutdown();
         const result = await completion;
-        if (result.status === "succeeded") return result.reason;
-        if (result.status === "failed") return `putdown failed: ${result.reason}`;
-        return `putdown was cancelled: ${result.reason}`;
+        if (result.status === "succeeded") return success(result.reason);
+        if (result.status === "failed") {
+            const reason = String(result.reason || "putdown failed").trim();
+            let replanReason = `the putdown could not be completed: ${reason}`;
+            if (reason === "not carrying any parcels") {
+                replanReason = "the agent is not carrying any parcels to put down";
+            } else if (reason === "no parcels were put down") {
+                replanReason = "no parcels were put down on the current tile";
+            }
+            return failure(`Putdown failed: ${reason}`, replanReason);
+        }
+        if (result.status === "cancelled") {
+            const reason = String(result.reason || "the objective was cancelled").trim();
+            return failure(
+                `Putdown was cancelled: ${reason}`,
+                `the putdown objective was cancelled: ${reason}`
+            );
+        }
+        throw new TypeError("put_down received an unknown objective result");
     }
 
     /**
      * Registers a scoring rule written by the model, and passes it to the partner.
      * A rule of the game binds the team, but the mission was only sent to one of us.
      * @param {string} input the rule as JSON
-     * @returns {Promise<string>}
+     * @returns {Promise<ToolExecutionResult>}
      */
     async registerRule(input) {
         let raw;
@@ -304,49 +409,77 @@ export class LLMExecutor {
         } catch {
             // A rejected tool call is a message the model can act on, so it says what a good
             // one looks like rather than only that this one was bad.
-            return 'that is not JSON. Write one object, for example '
-                + '{"id":"stack3","axis":"stack_count","equals":3,"multiplier":2}';
+            return failure(
+                'That is not JSON. Write one object, for example '
+                    + '{"id":"stack3","axis":"stack_count","equals":3,"multiplier":2}.',
+                "the scoring rule input was not valid JSON"
+            );
         }
 
         const result = applyRule(this.beliefs.rules, raw);
-        if (!result.ok) return `rule refused: ${result.reason}`;
+        if (!result.ok) {
+            return failure(
+                `Rule refused: ${result.reason}`,
+                `the scoring rule was invalid: ${result.reason}`
+            );
+        }
 
         // What goes on the wire is the rule as written, not as stored: the partner puts it
         // through the same validation this agent just did, and that reads the written shape.
         this.beliefs.partner.sendRule(raw);
-        return `rule ${result.rule.id} is in force: ${result.summary}`;
+        return success(`Rule ${result.rule.id} is in force: ${result.summary}`);
     }
 
     /**
      * Sends this agent to a tile for a while.
      * @param {string} input tile and seconds
-     * @returns {Promise<string>}
+     * @returns {Promise<ToolExecutionResult>}
      */
     async hold(input) {
         const hold = parseHold(input);
-        if (!hold) return `cannot read "${input}": write it as x,y seconds`;
+        if (!hold) {
+            return failure(
+                `Cannot read "${input}". Write it as x,y seconds.`,
+                "the hold_at input was invalid"
+            );
+        }
 
         const result = applyRule(this.beliefs.rules, {
             id: `hold ${hold.x},${hold.y}`,
             ...hold
         });
-        return result.ok ? result.summary : `cannot hold there: ${result.reason}`;
+        return result.ok
+            ? success(result.summary)
+            : failure(
+                `Cannot hold there: ${result.reason}`,
+                `the hold request was invalid: ${result.reason}`
+            );
     }
 
     /**
      * Sends the partner to a tile for a while. The name says partner, so nothing is
      * registered here: this agent carries on with what it was doing.
      * @param {string} input tile and seconds
-     * @returns {Promise<string>}
+     * @returns {Promise<ToolExecutionResult>}
      */
     async sendPartnerTo(input) {
         const hold = parseHold(input);
-        if (!hold) return `cannot read "${input}": write it as x,y seconds`;
-        if (!this.beliefs.partner.isKnown) return "there is no other agent to send";
+        if (!hold) {
+            return failure(
+                `Cannot read "${input}". Write it as x,y seconds.`,
+                "the send_partner_to input was invalid"
+            );
+        }
+        if (!this.beliefs.partner.isKnown) {
+            return failure(
+                "There is no available partner agent to send.",
+                "the partner agent is unavailable"
+            );
+        }
 
         this.beliefs.partner.sendRule({ id: `hold ${hold.x},${hold.y}`, ...hold });
-        return `asked the other agent to wait at (${hold.x},${hold.y}) `
-            + `for ${hold.seconds} seconds`;
+        return success(`Asked the other agent to wait at (${hold.x},${hold.y}) `
+            + `for ${hold.seconds} seconds.`);
     }
 }
 
