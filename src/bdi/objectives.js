@@ -28,12 +28,31 @@ export class ObjectiveStore {
             throw new TypeError("go_to target coordinates must be finite integers");
         }
 
+        return this._request("go_to_tile", { target: copyTarget(target) });
+    }
+
+    /** @returns {{objective: object, completion: Promise<object>}} */
+    requestPickup() {
+        return this._request("pick_up_here");
+    }
+
+    /** @returns {{objective: object, completion: Promise<object>}} */
+    requestPutdown() {
+        return this._request("put_down_here");
+    }
+
+    /**
+     * @param {'go_to_tile'|'pick_up_here'|'put_down_here'} type
+     * @param {object} [fields]
+     * @returns {{objective: object, completion: Promise<object>}}
+     */
+    _request(type, fields = {}) {
         this.cancelActive("replaced by a new objective");
 
         const objective = {
             id: `llm-objective-${this.nextId++}`,
-            type: "go_to_tile",
-            target: copyTarget(target),
+            type,
+            ...fields,
             utility: LLM_OBJECTIVE_UTILITY,
             status: "active",
         };
@@ -50,12 +69,13 @@ export class ObjectiveStore {
     getActiveDesire() {
         if (!this.active) return null;
         const { objective } = this.active;
-        return {
+        const desire = {
             type: objective.type,
-            target: copyTarget(objective.target),
             utility: objective.utility,
             objectiveId: objective.id,
         };
+        if (objective.target) desire.target = copyTarget(objective.target);
+        return desire;
     }
 
     /** @param {string} objectiveId */

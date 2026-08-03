@@ -1,5 +1,4 @@
 import config from "../config.js";
-import { executeAction } from "../bdi/execution.js";
 import { applyRule } from "../bdi/rules.js";
 import { describeState } from "./memory.js";
 
@@ -112,13 +111,6 @@ export class LLMExecutor {
         /** True while the LLM is processing a mission. */
         this.onMission = false;
 
-        /** Temporary guard while pickup and putdown still use the shared socket directly. */
-        this.directActionRunning = false;
-
-        // A direct action may start and finish while BDI planning is still running.
-        // The revision lets the loop detect that change after the action has ended.
-        this._directActionRevision = 0;
-
         /** Who sent the current mission, so replies go back to them. */
         this.senderId = null;
 
@@ -139,12 +131,12 @@ export class LLMExecutor {
             pick_up: {
                 description: "Pick up the parcels lying on the tile you are "
                     + "standing on. Walk there first.",
-                run: () => this.act("pickup"),
+                run: () => this.pickUp(),
             },
             put_down: {
                 description: "Drop the parcels you carry on the tile you are "
                     + "standing on. On a delivery tile they are scored.",
-                run: () => this.act("putdown"),
+                run: () => this.putDown(),
             },
             calculate: {
                 description: "Work out an arithmetic expression, for example "
@@ -244,14 +236,6 @@ export class LLMExecutor {
         this.senderId = senderId;
     }
 
-    get isDirectActionRunning() {
-        return this.directActionRunning;
-    }
-
-    get directActionRevision() {
-        return this._directActionRevision;
-    }
-
     /** @param {string} reason */
     cancelActiveObjective(reason) {
         return this.objectives.cancelActive(reason);
@@ -319,31 +303,27 @@ export class LLMExecutor {
     }
 
     /**
-     * Picks up or puts down on the current tile, reusing the Part A execution.
-     * @param {'pickup'|'putdown'} type
+     * Requests one pickup and waits for the BDI loop to return the server result.
      * @returns {Promise<string>}
      */
-    async act(type) {
-        this._directActionRevision += 1;
-        this.directActionRunning = true;
-        try {
-            const outcome = await executeAction({ action: type }, this.beliefs, this.socket);
-            this.beliefs.parcels.reconcileActionOutcome(
-                outcome,
-                this.beliefs.me.id,
-                this.beliefs.me.pos
-            );
-            const here = `(${this.beliefs.me.pos.x},${this.beliefs.me.pos.y})`;
-            if (outcome.status !== "succeeded") {
-                return type === "pickup"
-                    ? `nothing to pick up at ${here}`
-                    : `nothing to put down at ${here}`;
-            }
-            return `${type === "pickup" ? "picked up" : "put down"} `
-                + `${outcome.result.length} parcels at ${here}`;
-        } finally {
-            this.directActionRunning = false;
-        }
+    async pickUp() {
+        const { completion } = this.objectives.requestPickup();
+        const result = await completion;
+        if (result.status === "succeeded") return result.reason;
+        if (result.status === "failed") return `pickup failed: ${result.reason}`;
+        return `pickup was cancelled: ${result.reason}`;
+    }
+
+    /**
+     * Requests one putdown and waits for the BDI loop to return the server result.
+     * @returns {Promise<string>}
+     */
+    async putDown() {
+        const { completion } = this.objectives.requestPutdown();
+        const result = await completion;
+        if (result.status === "succeeded") return result.reason;
+        if (result.status === "failed") return `putdown failed: ${result.reason}`;
+        return `putdown was cancelled: ${result.reason}`;
     }
 
     /**

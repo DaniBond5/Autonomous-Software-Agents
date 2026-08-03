@@ -119,6 +119,14 @@ const planners = {
         planner.navigateThen({ action: "putdown" }, intention, beliefs),
     go_to_spawner: navigateOnly,
     go_to_tile: navigateOnly,
+    pick_up_here: () => ({
+        status: "action",
+        action: { action: "pickup" }
+    }),
+    put_down_here: (_planner, _intention, beliefs) =>
+        beliefs.parcels.carried.size === 0
+            ? { status: "unreachable", reason: "not carrying any parcels" }
+            : { status: "action", action: { action: "putdown" } },
 };
 
 /**

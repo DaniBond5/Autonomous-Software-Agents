@@ -5,13 +5,12 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  */
 
 /**
- * A desire is a candidate goal the agent could pursue. All variants expose a
- * `target`, so intention handling remains independent of the desire type.
- * The terminal action (pickup / putdown / nothing) is defined with `type`.
+ * A desire is a candidate goal the agent could pursue. Navigation variants
+ * expose a target, while action objectives operate on the current tile.
  *
  * @typedef {Object} Desire
- * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'|'go_to_tile'} type
- * @property {Point}  target   - where to move
+ * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'|'go_to_tile'|'pick_up_here'|'put_down_here'} type
+ * @property {Point} [target]  - where to move, when the desire navigates
  * @property {number} utility  - score from the utility functions
  * @property {number} [distance] - current BFS distance from the agent to the target
  * @property {string} [id]     - parcel id, ONLY for go_pick_up (used for intention revision)
@@ -25,8 +24,10 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  * @returns {string} the desire identity
  */
 export function desireKey(desire) {
-    const identity = desire.objectiveId ?? desire.id ?? '';
-    return `${desire.type}:${identity}:${desire.target.x},${desire.target.y}`;
+    if (desire.objectiveId) {
+        return `objective:${desire.type}:${desire.objectiveId}`;
+    }
+    return `${desire.type}:${desire.id ?? ''}:${desire.target.x},${desire.target.y}`;
 }
 
 /**

@@ -27,48 +27,79 @@ const intentionKey = (intention) =>
     intention ? desireKey(intention) : null;
 
 /**
+ * Resolves a pickup or putdown objective from the real server outcome.
+ * @param {import("./desires.js").Desire | null} intention
+ * @param {import("./execution.js").ActionOutcome} outcome
+ * @param {import("./objectives.js").ObjectiveStore | null} objectives
+ * @returns {boolean} whether the outcome belongs to an external action objective
+ */
+function settleActionObjective(intention, outcome, objectives) {
+    const actionType = outcome?.action?.action;
+    const expectedObjectiveType = actionType === "pickup"
+        ? "pick_up_here"
+        : actionType === "putdown"
+            ? "put_down_here"
+            : null;
+    if (!expectedObjectiveType
+        || intention?.type !== expectedObjectiveType
+        || !intention.objectiveId) return false;
+
+    const objectiveId = intention.objectiveId;
+    if (!objectives?.isActive(objectiveId)) return true;
+
+    const result = outcome.result;
+    if (outcome.status === "succeeded"
+        && Array.isArray(result)
+        && result.length > 0) {
+        const action = actionType === "pickup" ? "picked up" : "put down";
+        const parcels = result.length === 1 ? "parcel" : "parcels";
+        objectives.complete(
+            objectiveId,
+            `${action} ${result.length} ${parcels}`
+        );
+        return true;
+    }
+
+    if (Array.isArray(result) && result.length === 0) {
+        objectives.fail(
+            objectiveId,
+            actionType === "pickup"
+                ? "no parcels were picked up"
+                : "no parcels were put down"
+        );
+        return true;
+    }
+
+    const error = outcome.error;
+    const reason = error instanceof Error
+        ? error.message
+        : error != null
+            ? String(error)
+            : `${actionType} failed`;
+    objectives.fail(objectiveId, reason);
+    return true;
+}
+
+/**
  * This function runs the BDI control loop of one agent.
  * The loop lives here, and not in the entry point, so a second agent can run
  * the same cycle on its own beliefs and planner.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {import("./planning.js").Planner} planner
  * @param {object} socket
- * @param {{objectives?: import("./objectives.js").ObjectiveStore | null,
- *          isSuspended?: () => boolean,
- *          getSuspensionRevision?: () => number}} [options]
+ * @param {{objectives?: import("./objectives.js").ObjectiveStore | null}} [options]
  */
 export async function runAgentLoop(
     beliefs,
     planner,
     socket,
-    {
-        objectives = null,
-        isSuspended = () => false,
-        getSuspensionRevision = () => 0,
-    } = {}
+    { objectives = null } = {}
 ) {
     let currentIntention = null;
-    let handledSuspensionRevision = getSuspensionRevision();
-
-    const handleRevisionChange = revision => {
-        handledSuspensionRevision = revision;
-        currentIntention = null;
-        planner.resetPlanningState("direct physical action changed the world");
-        beliefs.partner.announceIntention(null);
-    };
 
     console.log(`[${beliefs.me.name || "agent"}] loop started`);
 
     while (true) {
-        const revision = getSuspensionRevision();
-        if (revision !== handledSuspensionRevision) {
-            handleRevisionChange(revision);
-        }
-        if (isSuspended()) {
-            await wait(IDLE_WAIT_MS);
-            continue;
-        }
-
         const desires = planner.filterPlannableDesires(
             generateDesires(beliefs, false, objectives),
             beliefs
@@ -117,18 +148,6 @@ export async function runAgentLoop(
             beliefs
         );
 
-        // The revision catches a direct action even when it finished during planning.
-        // The boolean only tells whether that action is still running now.
-        const latestRevision = getSuspensionRevision();
-        if (latestRevision !== handledSuspensionRevision) {
-            handleRevisionChange(latestRevision);
-            continue;
-        }
-        if (isSuspended()) {
-            await wait(IDLE_WAIT_MS);
-            continue;
-        }
-
         const objectiveId = currentIntention?.objectiveId ?? null;
         if (objectiveId && !objectives?.isActive(objectiveId)) {
             currentIntention = null;
@@ -137,6 +156,7 @@ export async function runAgentLoop(
         }
         if (planningResult.status === "idle"
             && objectiveId
+            && currentIntention.type === "go_to_tile"
             && objectives?.isActive(objectiveId)) {
             const { x, y } = currentIntention.target;
             objectives.complete(objectiveId, `reached target (${x},${y})`);
@@ -153,6 +173,8 @@ export async function runAgentLoop(
                     objectiveId,
                     planningResult.reason || "target is unreachable"
                 );
+                planner.resetPlanningState("external objective failed");
+                beliefs.partner.announceIntention(null);
             }
             currentIntention = null;
         }
@@ -181,11 +203,23 @@ export async function runAgentLoop(
             currentIntention = null;
         }
 
+        // The LLM only requests pickup or putdown. The normal BDI executor sends the
+        // action, beliefs are reconciled above, and the real outcome resolves the tool.
+        const externalActionFinished = settleActionObjective(
+            currentIntention,
+            outcome,
+            objectives
+        );
+
         const actionType = outcome?.action?.action;
         const isTerminalAction = actionType === "pickup"
             || actionType === "putdown";
 
         if (isTerminalAction) {
+            if (externalActionFinished) {
+                planner.resetPlanningState("external action finished");
+                beliefs.partner.announceIntention(null);
+            }
             currentIntention = null;
         }
 
