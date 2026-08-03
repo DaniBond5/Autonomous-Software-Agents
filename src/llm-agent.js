@@ -56,8 +56,8 @@ function isMissionSender(id, name) {
  * @returns {import("./bdi/beliefs.js").Beliefs} this agent's beliefs
  */
 export function startLlmAgent(socket) {
-    // Its own beliefs and planner on its own socket: the LLM agent reuses the
-    // Part A machinery without sharing state with the BDI agent.
+    // Its own beliefs and planner stay on its own socket. Partner reports enter
+    // through the small beliefs protocol instead of sharing mutable objects.
     const beliefs = new Beliefs();
     const planner = new Planner();
     const objectives = new ObjectiveStore();

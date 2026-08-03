@@ -10,16 +10,12 @@ const MAX_DELIVERIES = 10;
 // the whole course shares, so it does not pay to carry much more than that.
 const MAX_RECENT_EVENTS = 15;
 
-// The history is the only list that survives across turns, so it is the only
-// one that can grow without bound. This is its ceiling.
-const MAX_HISTORY = 100;
-
 const point = ({ x, y }) => `(${x},${y})`;
 
 /**
  * Describes the world in the few lines the model needs to act.
- * It is shared by the context builder and the get_state tool, so the agent
- * always reads the same picture of the game.
+ * It is rebuilt by the context builder, so every model turn reads the current
+ * picture of the game.
  * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @returns {string}
  */
@@ -38,12 +34,23 @@ export function describeState(beliefs) {
     const deliveries = [...beliefs.world.deliveries.values()]
         .slice(0, MAX_DELIVERIES)
         .map(point);
+    let partner = "partner: not configured";
+    if (beliefs.partner.isKnown) {
+        if (!beliefs.partner.state) {
+            partner = "partner: known, no state received yet";
+        } else {
+            const state = beliefs.partner.state;
+            partner = `partner last report: position ${point(state)}, carrying `
+                + `${state.carriedCount} parcels worth ${state.carriedReward}`;
+        }
+    }
 
     return [
         `position: ${point(beliefs.me.pos)}`,
         `score: ${beliefs.me.score}`,
         `carrying: ${beliefs.parcels.carried.size} parcels `
         + `worth ${beliefs.parcels.carriedScore()}`,
+        partner,
         `parcels on the ground: ${parcels.join(", ") || "none in sight"}`,
         `delivery tiles: ${deliveries.join(", ") || "none known"}`,
         `map size: ${beliefs.world.width} by ${beliefs.world.height}, `
@@ -119,8 +126,8 @@ export class LLMMemory {
      */
     remember(event) {
         this.history.push(event);
-        if (this.history.length > MAX_HISTORY) {
-            this.history.splice(0, this.history.length - MAX_HISTORY);
+        if (this.history.length > MAX_RECENT_EVENTS) {
+            this.history.splice(0, this.history.length - MAX_RECENT_EVENTS);
         }
     }
 
@@ -129,7 +136,6 @@ export class LLMMemory {
      * @returns {string}
      */
     buildContext() {
-        const recent = this.history.slice(-MAX_RECENT_EVENTS);
         // The rules go in beside the state because they are part of it: without reading them
         // back the model cannot tell a rule it already registered from one it still has to,
         // and would register the same thing again under a new id every turn.
@@ -142,7 +148,7 @@ export class LLMMemory {
             ...(rules ? ["", rules] : []),
             "",
             "What happened recently:",
-            recent.map(event => `- ${event}`).join("\n") || "- nothing yet",
+            this.history.map(event => `- ${event}`).join("\n") || "- nothing yet",
         ].join("\n");
     }
 }
