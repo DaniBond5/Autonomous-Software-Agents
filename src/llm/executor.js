@@ -1,6 +1,5 @@
 import config from "../config.js";
 import { applyRule } from "../bdi/rules.js";
-import { describeState } from "./memory.js";
 
 const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
@@ -142,13 +141,6 @@ export class LLMExecutor {
         this.objectives = objectives;
 
         this.tools = {
-            get_state: {
-                description: "Read the game state: your position and score, the "
-                    + "parcels you carry, the parcels and delivery tiles you can "
-                    + "see, and the size of the map. Use it before deciding "
-                    + "anything that depends on where things are.",
-                run: async () => success(describeState(this.beliefs)),
-            },
             go_to: {
                 description: "Walk to a tile. Input is the pair of coordinates, "
                     + "for example 4,7. Returns when you arrive or when the tile "
@@ -503,7 +495,11 @@ export function buildSystemPrompt(executor) {
 to a delivery tile and put them down there to score points. Players talk to you
 in the chat and may give you a mission.
 
-Tiles are addressed as x,y. x grows to the right and y grows upwards, both from 0.
+The current game state is included in every turn.
+Use that state directly instead of asking for it again.
+The bottom-left tile is (0,0). x grows to the right and y grows upwards.
+Partner information is the last state reported by the other agent. If partner
+information is missing, do not invent it.
 
 Your tools:
 ${tools}

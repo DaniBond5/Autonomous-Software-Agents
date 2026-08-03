@@ -532,7 +532,29 @@ class Agents {
 const PROTOCOL_VERSION = 1;
 
 /**
- * This class represents what the agent believes about its teammate: who it is, and which parcel it has committed to.
+ * Validates and copies the small state report shared between partners.
+ * @param {*} state
+ * @returns {{x: number, y: number, carriedCount: number, carriedReward: number} | null}
+ */
+function normalizePartnerState(state) {
+    if (!isFinitePosition(state)
+        || !Number.isInteger(state.carriedCount)
+        || state.carriedCount < 0
+        || !Number.isFinite(state.carriedReward)
+        || state.carriedReward < 0) {
+        return null;
+    }
+
+    return {
+        x: Number(state.x),
+        y: Number(state.y),
+        carriedCount: state.carriedCount,
+        carriedReward: Number(state.carriedReward)
+    };
+}
+
+/**
+ * This class represents what the agent believes about its teammate: its id, last reported state and parcel claim.
  * Everything the two agents exchange is a belief, so the partner sits here beside the other belief components
  * and is revised in the same place as sensing.
  * It also owns the sending side of the protocol, because a belief about the partner is the only thing worth sending it.
@@ -551,6 +573,22 @@ class Partner {
          * @type {string | null}
         */
         this.id = null;
+
+        /**
+         * The last valid state reported by the partner. receivedAt uses this agent's clock.
+         * @type {{x: number, y: number, carriedCount: number, carriedReward: number,
+         *         receivedAt: number} | null}
+        */
+        this.state = null;
+
+        /**
+         * This agent's latest valid state, kept so a newly connected partner receives it.
+         * @type {{x: number, y: number, carriedCount: number, carriedReward: number} | null}
+        */
+        this.myState = null;
+
+        /** @type {string | null} */
+        this.sharedStateFingerprint = null;
 
         /**
          * The parcel the partner declared it is going for, with its distance to it, or null when it claims nothing.
@@ -592,10 +630,18 @@ class Partner {
         this.id = id;
         console.log(`[${this.me.name || "agent"}] partner is agent ${id}`);
 
-        // The partner missed whatever was said before it arrived. Forgetting the last report makes
-        // the next sensing send one, and a claim already made is repeated here, so starting order does not matter.
         this.sharedParcelIds = null;
-        if (this.myClaim) this.send({ kind: 'claim', ...this.myClaim });
+        this.sharedStateFingerprint = null;
+
+        const connectedId = id;
+        // The launcher connects both partners in the same synchronous block.
+        // Send saved data afterwards, when both receivers know the partner id.
+        queueMicrotask(() => {
+            if (this.id !== connectedId) return;
+
+            this.sendCurrentState();
+            if (this.myClaim) this.send({ kind: 'claim', ...this.myClaim });
+        });
     }
 
     /**
@@ -606,9 +652,44 @@ class Partner {
     disconnected() {
         console.log(`[${this.me.name || "agent"}] partner disconnected`);
         this.id = null;
+        this.state = null;
+        this.sharedStateFingerprint = null;
 
         // A claim by an agent that is gone would keep a parcel reserved for nobody.
         this.claim = null;
+    }
+
+    /**
+     * Records the partner's last valid report and timestamps it on receipt.
+     * @param {*} state
+    */
+    setState(state) {
+        const normalized = normalizePartnerState(state);
+        if (!normalized) return;
+        this.state = { ...normalized, receivedAt: Date.now() };
+    }
+
+    /**
+     * Saves this agent's current state and shares it only when its values changed.
+     * @param {*} state
+    */
+    shareState(state) {
+        const normalized = normalizePartnerState(state);
+        if (!normalized) return;
+        this.myState = normalized;
+        this.sendCurrentState();
+    }
+
+    /** Sends the saved local state once per distinct value. */
+    sendCurrentState() {
+        if (!this.isKnown || !this.myState) return;
+
+        const state = this.myState;
+        const fingerprint = `${state.x},${state.y},${state.carriedCount},${state.carriedReward}`;
+        if (fingerprint === this.sharedStateFingerprint) return;
+        this.sharedStateFingerprint = fingerprint;
+
+        this.send({ kind: 'state', ...state });
     }
 
     /**
@@ -945,8 +1026,22 @@ export class Beliefs {
     init(socket) {
         this.partner.socket = socket;
 
+        const shareCurrentState = () => {
+            if (!isFinitePosition(this.me.pos)
+                || this.me.pos.x < 0
+                || this.me.pos.y < 0) return;
+
+            this.partner.shareState({
+                x: this.me.pos.x,
+                y: this.me.pos.y,
+                carriedCount: this.parcels.carried.size,
+                carriedReward: this.parcels.carriedScore()
+            });
+        };
+
         socket.onYou((payload) => {
             this.me.update(payload);
+            shareCurrentState();
         });
 
         socket.onSensing((sensing) => {
@@ -957,6 +1052,7 @@ export class Beliefs {
                 this.me.id,
                 isVisible
             );
+            shareCurrentState();
             this.crates.update(
                 sensing.crates ?? [],
                 isVisible
@@ -980,6 +1076,11 @@ export class Beliefs {
             if (!this.partner.isKnown
                 || senderId !== this.partner.id
                 || message?.v !== PROTOCOL_VERSION) {
+                return;
+            }
+
+            if (message.kind === 'state') {
+                this.partner.setState(message);
                 return;
             }
 

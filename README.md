@@ -26,6 +26,18 @@ the BDI executor sends move, pickup and putdown actions to the server. Missions 
 time, with at most one latest pending mission. A semantic tool failure gives the replanner one
 concrete reason, so the next LLM turn can choose another approach.
 
+### Live LLM context
+
+Each LLM turn rebuilds its context from live beliefs. It includes:
+
+- the agent position, score and carried parcels;
+- known parcels and delivery tiles;
+- active mission rules;
+- the partner's last reported position and carried load.
+
+Each agent shares its position and load only when they change. The LLM reads this state
+directly from its context instead of asking for it again.
+
 ## Installation
 
 ### Requirements
