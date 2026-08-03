@@ -16,7 +16,7 @@ export function startBdiAgent(socket) {
 
     beliefs.init(socket);
     runAgentLoop(beliefs, planner, socket).catch((error) => {
-        console.error("[agent] fatal error:", error);
+        console.error(`[${beliefs.me.name || "agent"}] fatal error:`, error);
         process.exitCode = 1;
     });
 

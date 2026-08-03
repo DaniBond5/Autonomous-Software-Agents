@@ -102,7 +102,9 @@ Open the server address in a browser with the same token to watch an agent play 
 own point of view.
 
 The first two run one agent with no teammate, which is the baseline the pair is compared
-against. Each connects only its own token, so a `.env` holding one of the two is enough.
+against. Each connects only its own token, so `npm start` needs nothing but `HOST` and
+`TOKEN`. `npm run start:llm` also needs the LiteLLM settings, because the LLM agent builds
+its model client as it starts.
 
 `npm run start:both` is the only mode in which the agents coordinate: it connects both
 tokens, gives each agent the other's id, and prints one line saying which id each of them

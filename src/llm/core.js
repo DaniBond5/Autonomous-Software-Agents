@@ -61,6 +61,10 @@ export class LLMAgent {
         if (this.running) {
             // The turn under way is about the old goal. Stopping it lets the
             // loop that owns it pick the new one up on its next step.
+            // This is the one case where a goal replaces another, so it is the one the
+            // replanner is told about: a goal arriving with nothing running simply starts
+            // a mission, and there is no approach yet to reconsider.
+            this.memory.noteGoalReplaced();
             this.planner.abort();
             return;
         }
@@ -104,8 +108,14 @@ export class LLMAgent {
                 await this.cooldown();
                 turns += 1;
 
-                const outcome = this.replanner.shouldReplan(this.memory)
-                    ? await this.replanner.replan(this.memory, this.planner, this.executor)
+                // Asked once: the check clears what it reports, so a second call would say
+                // nothing changed. Both branches run a turn, and what differs is whether
+                // memory carries a line telling the model to reconsider.
+                const reason = this.replanner.shouldReplan(this.memory);
+                const outcome = reason
+                    ? await this.replanner.replan(
+                        this.memory, this.planner, this.executor, reason
+                    )
                     : await this.planner.runTurn(this.memory, this.executor);
 
                 if (outcome === "unreachable") {
@@ -129,6 +139,9 @@ export class LLMAgent {
             }
         } finally {
             this.running = false;
+            // The one point every exit above passes through, and most of them skip the check
+            // that would otherwise have read these. See forgetPendingChanges.
+            this.memory.forgetPendingChanges();
             this.memory.setGoal(DEFAULT_GOAL);
         }
     }

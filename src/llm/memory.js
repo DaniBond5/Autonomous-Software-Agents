@@ -1,9 +1,14 @@
 // Every list handed to the model is truncated. A prompt that grows with the
 // game would slow every call down and eventually stop fitting, and the model
-// only needs the nearest candidates to decide what to do next.
+// needs the best few candidates to decide what to do next, not all of them.
 const MAX_PARCELS = 10;
 const MAX_DELIVERIES = 10;
-const MAX_RECENT_EVENTS = 5;
+
+// A mission can run for ten turns, so five lines of history let it forget what
+// it did at the start and repeat it. Fifteen covers a whole mission at three
+// tool calls a turn, and the prompt is rebuilt from scratch against an endpoint
+// the whole course shares, so it does not pay to carry much more than that.
+const MAX_RECENT_EVENTS = 15;
 
 // The history is the only list that survives across turns, so it is the only
 // one that can grow without bound. This is its ceiling.
@@ -19,8 +24,15 @@ const point = ({ x, y }) => `(${x},${y})`;
  * @returns {string}
  */
 export function describeState(beliefs) {
-    const parcels = [...beliefs.parcels.visible.values()]
-        .filter(parcel => !parcel.carriedBy)
+    // The known set, not the visible one: it holds what this agent can see and also what the
+    // partner reported, which is the half of the memory the brief asks to come from exchanging
+    // beliefs. This accessor is the one that re-estimates a reward from when it was observed
+    // and forgets a parcel once that reaches zero, so nothing stale reaches the prompt.
+    // Sorted by reward before truncating, because the ten the model is told about should be
+    // the ten worth telling it about rather than the ten observed longest ago.
+    const parcels = beliefs.parcels
+        .availableKnown(beliefs.world.localDecayIntervalMs)
+        .sort((first, second) => second.reward - first.reward)
         .slice(0, MAX_PARCELS)
         .map(parcel => `${point(parcel)} reward ${parcel.reward}`);
     const deliveries = [...beliefs.world.deliveries.values()]
@@ -58,8 +70,16 @@ export class LLMMemory {
         /** @type {string[]} */
         this.history = [];
 
-        /** Last observed world, kept to tell a real change from noise. */
-        this.snapshot = { carried: beliefs.parcels.carried.size };
+        /**
+         * What the replanner watches: the last observed world, kept to tell a real change
+         * from noise, and the two events that happen rather than persist. Each field is read
+         * and cleared by its own reader below, so one event replans once.
+         */
+        this.snapshot = {
+            carried: beliefs.parcels.carried.size,
+            failedTool: null,
+            goalReplaced: false,
+        };
     }
 
     /**
@@ -68,6 +88,42 @@ export class LLMMemory {
     setGoal(goal) {
         this.goal = goal;
         this.remember(`new goal: ${goal}`);
+    }
+
+    /**
+     * Records a tool that failed for a reason it did not choose: it threw, or there is no
+     * such tool. A tool that returns a message explaining why it could not do something has
+     * done its job, and marking those would replan on almost every turn.
+     * @param {string} name
+     */
+    noteToolFailure(name) {
+        this.snapshot.failedTool = name;
+    }
+
+    /**
+     * Records that a goal arrived while another was being worked on.
+     * Only that case counts. Setting a goal with nothing running is the start of a mission,
+     * and there is no plan yet to reconsider; the end of every mission sets the default goal
+     * too, and marking that would make the next mission replan on its first turn for the rest
+     * of the game.
+     */
+    noteGoalReplaced() {
+        this.snapshot.goalReplaced = true;
+    }
+
+    /**
+     * Drops the changes still waiting to be reported, and takes the world as it stands now.
+     *
+     * These fields describe what happened inside one mission, so they end with it. A trigger
+     * raised during the last turn has no next turn to be read in: the check that would have
+     * read it runs at the start of a turn, and tools run during one. Carried across, it would
+     * open the following mission by asking the model to reconsider an approach belonging to
+     * work that is already over.
+     */
+    forgetPendingChanges() {
+        this.snapshot.failedTool = null;
+        this.snapshot.goalReplaced = false;
+        this.snapshot.carried = this.beliefs.parcels.carried.size;
     }
 
     /**
@@ -117,5 +173,27 @@ export class LLMMemory {
         if (carried === this.snapshot.carried) return false;
         this.snapshot.carried = carried;
         return true;
+    }
+
+    /**
+     * Which tool failed since this was last asked, if one did.
+     * Cleared here, like the check above, so one failure is reported once.
+     * @returns {string | null} the tool's name, or null when none failed
+     */
+    hasToolFailed() {
+        const failedTool = this.snapshot.failedTool;
+        this.snapshot.failedTool = null;
+        return failedTool;
+    }
+
+    /**
+     * Whether a new goal replaced the one being worked on since this was last asked.
+     * Cleared here, like the checks above, so one replacement is reported once.
+     * @returns {boolean}
+     */
+    hasGoalChanged() {
+        const goalReplaced = this.snapshot.goalReplaced;
+        this.snapshot.goalReplaced = false;
+        return goalReplaced;
     }
 }
