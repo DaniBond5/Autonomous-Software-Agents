@@ -3,6 +3,11 @@ import {
     applyStrategyOperation,
     normalizeStrategyOperation
 } from "../bdi/rules.js";
+import {
+    distanceFromSearch,
+    isPositionTraversable,
+    shortestPathsFrom
+} from "../utils/geometry.js";
 
 const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
@@ -45,6 +50,85 @@ function failure(observation, replanReason) {
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
 const STRATEGY_SCOPES = new Set(["me", "teammate", "both"]);
+const RENDEZVOUS_REPLAN_REASON = "the rendezvous could not be started or completed";
+const rendezvousFailure = observation =>
+    failure(observation, RENDEZVOUS_REPLAN_REASON);
+
+const isObject = value => value !== null
+    && typeof value === "object"
+    && !Array.isArray(value);
+const isIntegerPosition = position =>
+    Number.isInteger(position?.x) && Number.isInteger(position?.y);
+const manhattanDistance = (first, second) =>
+    Math.abs(first.x - second.x) + Math.abs(first.y - second.y);
+
+function compareRendezvousAssignments(first, second) {
+    const firstRank = [
+        Math.max(first.myDistance, first.partnerDistance),
+        first.myDistance + first.partnerDistance,
+        first.myTarget.x,
+        first.myTarget.y,
+        first.partnerTarget.x,
+        first.partnerTarget.y
+    ];
+    const secondRank = [
+        Math.max(second.myDistance, second.partnerDistance),
+        second.myDistance + second.partnerDistance,
+        second.myTarget.x,
+        second.myTarget.y,
+        second.partnerTarget.x,
+        second.partnerTarget.y
+    ];
+    for (let index = 0; index < firstRank.length; index += 1) {
+        if (firstRank[index] !== secondRank[index]) {
+            return firstRank[index] - secondRank[index];
+        }
+    }
+    return 0;
+}
+
+function selectRendezvousTargets(beliefs, center, radius) {
+    const region = [...beliefs.world.tiles.values()]
+        .filter(tile => isIntegerPosition(tile)
+            && manhattanDistance(tile, center) <= radius)
+        .map(tile => ({ x: tile.x, y: tile.y }));
+    const candidates = region.filter(tile =>
+        isPositionTraversable(beliefs, tile)
+        && !beliefs.rules.isAvoided(tile)
+    );
+    const isBlockedByCrate = position => beliefs.crates.isOccupied(position);
+    const myPaths = shortestPathsFrom(beliefs, beliefs.me.pos, {
+        isBlocked: isBlockedByCrate
+    });
+    const partnerPaths = shortestPathsFrom(beliefs, beliefs.partner.state, {
+        isBlocked: isBlockedByCrate
+    });
+
+    let best = null;
+    for (const myTarget of candidates) {
+        const myDistance = distanceFromSearch(myPaths, myTarget);
+        if (!Number.isFinite(myDistance)) continue;
+
+        for (const partnerTarget of candidates) {
+            if (myTarget.x === partnerTarget.x
+                && myTarget.y === partnerTarget.y) continue;
+            const partnerDistance = distanceFromSearch(partnerPaths, partnerTarget);
+            if (!Number.isFinite(partnerDistance)) continue;
+
+            const assignment = {
+                myTarget,
+                partnerTarget,
+                myDistance,
+                partnerDistance
+            };
+            if (!best || compareRendezvousAssignments(assignment, best) < 0) {
+                best = assignment;
+            }
+        }
+    }
+
+    return { regionIntersectsMap: region.length > 0, assignment: best };
+}
 
 /**
  * Evaluates an arithmetic expression without eval, which would run whatever
@@ -111,7 +195,7 @@ function parseTile(input) {
 }
 
 /**
- * Reads a tile and a duration, the input both waiting tools take.
+ * Reads a tile and a duration for the local hold tool.
  * @param {string} input
  * @returns {{x: number, y: number, seconds: number} | null}
  */
@@ -212,11 +296,11 @@ export class LLMExecutor {
                     + "mission that asks you to be somewhere at a time.",
                 run: input => this.hold(input),
             },
-            send_partner_to: {
-                description: "Ask the other agent to go to a tile and wait there, while you "
-                    + 'carry on. Same input as hold_at, for example "4,7 30". Use it for a '
-                    + "mission that asks both agents to meet.",
-                run: input => this.sendPartnerTo(input),
+            rendezvous: {
+                description: "Move both agents near one position and wait for both to arrive. "
+                    + "Input is JSON with integer x, y, and a non-negative Manhattan radius, "
+                    + 'for example {"x":4,"y":7,"radius":3}.',
+                run: input => this.rendezvous(input),
             },
         };
     }
@@ -512,30 +596,174 @@ export class LLMExecutor {
             );
     }
 
-    /**
-     * Sends the partner to a tile for a while. The name says partner, so nothing is
-     * registered here: this agent carries on with what it was doing.
-     * @param {string} input tile and seconds
-     * @returns {Promise<ToolExecutionResult>}
-     */
-    async sendPartnerTo(input) {
-        const hold = parseHold(input);
-        if (!hold) {
-            return failure(
-                `Cannot read "${input}". Write it as x,y seconds.`,
-                "the send_partner_to input was invalid"
+    async waitForRendezvous(center, radius, rendezvousId, deadline) {
+        let revision = this.beliefs.sensingRevision;
+
+        while (Date.now() < deadline) {
+            if (!this.beliefs.partner.isKnown) {
+                return rendezvousFailure(
+                    "Rendezvous failed because the partner is no longer available."
+                );
+            }
+
+            const myPosition = this.beliefs.me.pos;
+            const partnerPosition = this.beliefs.partner.state;
+            if (!isIntegerPosition(myPosition)) {
+                return rendezvousFailure(
+                    "Rendezvous failed because the local position is unavailable."
+                );
+            }
+            if (!isIntegerPosition(partnerPosition)) {
+                return rendezvousFailure(
+                    "Rendezvous failed because the partner position is unavailable."
+                );
+            }
+
+            if (this.beliefs.rules.activeHold()?.id !== rendezvousId) {
+                return rendezvousFailure(
+                    "Rendezvous stopped because its local hold was replaced."
+                );
+            }
+
+            const bothInside = manhattanDistance(myPosition, center) <= radius
+                && manhattanDistance(partnerPosition, center) <= radius;
+            if (bothInside) {
+                return success(
+                    `Rendezvous completed near (${center.x},${center.y}): `
+                    + `both agents are within radius ${radius}.`
+                );
+            }
+
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) break;
+            await this.beliefs.waitForSensingAfter(revision, remainingMs);
+            revision = this.beliefs.sensingRevision;
+        }
+
+        return rendezvousFailure(
+            "Rendezvous failed: both agents did not reach the requested area before the deadline."
+        );
+    }
+
+    /** Selects two targets, installs their holds, and waits for both BDI agents. */
+    async rendezvous(input) {
+        let request;
+        try {
+            request = JSON.parse(String(input ?? ""));
+        } catch {
+            return rendezvousFailure(
+                "Cannot start rendezvous: the input is not valid JSON."
             );
         }
-        if (!this.beliefs.partner.isKnown) {
-            return failure(
-                "There is no available partner agent to send.",
-                "the partner agent is unavailable"
+        if (!isObject(request)) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: the input must be one JSON object."
+            );
+        }
+        if (!Number.isInteger(request.x) || !Number.isInteger(request.y)
+            || !Number.isInteger(request.radius) || request.radius < 0) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: x and y must be integers and radius must be a non-negative integer."
             );
         }
 
-        this.beliefs.partner.shareHold({ id: `hold ${hold.x},${hold.y}`, ...hold });
-        return success(`Asked the other agent to wait at (${hold.x},${hold.y}) `
-            + `for ${hold.seconds} seconds.`);
+        const world = this.beliefs.world;
+        if (world.tiles.size === 0 || world.width <= 0 || world.height <= 0) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: the map is not available yet."
+            );
+        }
+        if (!this.beliefs.partner.isKnown) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: no partner is configured."
+            );
+        }
+        if (!isIntegerPosition(this.beliefs.me.pos)
+            || !isPositionTraversable(this.beliefs, this.beliefs.me.pos)) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: the local position is unavailable."
+            );
+        }
+        if (!isIntegerPosition(this.beliefs.partner.state)
+            || !isPositionTraversable(this.beliefs, this.beliefs.partner.state)) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: the partner position is unavailable."
+            );
+        }
+
+        const center = { x: request.x, y: request.y };
+        const selection = selectRendezvousTargets(
+            this.beliefs,
+            center,
+            request.radius
+        );
+        if (!selection.regionIntersectsMap) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: the requested area does not intersect the known map."
+            );
+        }
+        if (!selection.assignment) {
+            return rendezvousFailure(
+                "Cannot start rendezvous: there are not two distinct reachable tiles inside the requested area."
+            );
+        }
+
+        // The runtime selects two different reachable tiles.
+        // Both BDI loops remain responsible for movement.
+        const { myTarget, partnerTarget, myDistance, partnerDistance } =
+            selection.assignment;
+        const longestDistance = Math.max(myDistance, partnerDistance);
+        const movementDuration = world.movementDurationMs();
+        const timeoutMoves = longestDistance + world.width + world.height;
+        const timeoutMs = timeoutMoves * movementDuration;
+        const holdSeconds = Math.ceil(timeoutMs / 1000) + 1;
+        const startedAt = Date.now();
+        const ownerId = String(this.beliefs.me.id || "agent").trim() || "agent";
+        const rendezvousId = `rendezvous:${ownerId}:${startedAt}`;
+        const deadline = startedAt + timeoutMs;
+        const localHold = {
+            id: rendezvousId,
+            x: myTarget.x,
+            y: myTarget.y,
+            seconds: holdSeconds
+        };
+        const partnerHold = {
+            id: rendezvousId,
+            x: partnerTarget.x,
+            y: partnerTarget.y,
+            seconds: holdSeconds
+        };
+
+        const registered = this.beliefs.rules.setHold(localHold);
+        if (!registered.ok) {
+            return rendezvousFailure(
+                `Cannot start rendezvous: ${registered.reason}.`
+            );
+        }
+
+        try {
+            this.beliefs.partner.shareHold(partnerHold);
+            return await this.waitForRendezvous(
+                center,
+                request.radius,
+                rendezvousId,
+                deadline
+            );
+        } catch (error) {
+            console.error("[llm] rendezvous coordination failed:", error);
+            return rendezvousFailure(
+                "Rendezvous failed because coordination could not be completed."
+            );
+        } finally {
+            // Clear only the hold created by this rendezvous.
+            // A newer hold must not be removed.
+            this.beliefs.rules.clearHold(rendezvousId);
+            try {
+                this.beliefs.partner.shareHoldClear(rendezvousId);
+            } catch (error) {
+                console.warn("[llm] rendezvous cleanup message failed:", error);
+            }
+        }
     }
 }
 
@@ -570,6 +798,10 @@ tool for each requested strategy change. Use scope "me" for this agent only,
 scope "teammate" for the BDI partner only, and scope "both" only when the
 mission explicitly applies to both agents. A multiplier can be zero. Use
 clear_strategy only when the active Level 2 strategy must be removed.
+
+For a mission that asks both agents to meet near one position, call rendezvous
+once with the center and maximum Manhattan radius. The tool selects the two
+target tiles and waits for both agents. Do not combine rendezvous with hold_at.
 
 Your tools:
 ${tools}

@@ -661,12 +661,13 @@ class Partner {
 
     /**
      * Records the partner's last valid report and timestamps it on receipt.
-     * @param {*} state
-    */
+     * @returns {boolean} whether the report was accepted
+     */
     setState(state) {
         const normalized = normalizePartnerState(state);
-        if (!normalized) return;
+        if (!normalized) return false;
         this.state = { ...normalized, receivedAt: Date.now() };
+        return true;
     }
 
     /**
@@ -762,6 +763,12 @@ class Partner {
     /** Sends one temporary hold without making it part of the Level 2 strategy. */
     shareHold(hold) {
         this.send({ kind: 'hold', hold });
+    }
+
+    /** Sends a targeted hold removal without changing local state. */
+    shareHoldClear(id) {
+        if (typeof id !== 'string' || !id.trim()) return;
+        this.send({ kind: 'hold_clear', id });
     }
 
     /**
@@ -986,17 +993,21 @@ class World {
         return this.movementDuration / this.localDecayIntervalMs;
     }
 
+    /** Returns the current movement duration or the existing local fallback. */
+    movementDurationMs() {
+        return Number.isFinite(this.movementDuration)
+            && this.movementDuration > 0
+            ? this.movementDuration
+            : DEFAULT_MOVEMENT_DURATION_MS;
+    }
+
     /**
      * This function returns how long to wait for another agent to clear a tile, in milliseconds.
      * The value is computed in movements so the wait scales with the speed of the game.
      * @returns {number} the tile clear wait time in milliseconds, scaled with movements.
      */
     blockingAgentWaitMs() {
-        const movementDuration = Number.isFinite(this.movementDuration)
-            && this.movementDuration > 0
-            ? this.movementDuration
-            : DEFAULT_MOVEMENT_DURATION_MS;
-        return movementDuration * BLOCKING_AGENT_WAIT_MOVES;
+        return this.movementDurationMs() * BLOCKING_AGENT_WAIT_MOVES;
     }
 }
 
@@ -1017,6 +1028,39 @@ export class Beliefs {
 
         // Desires and pathfinding read this same local strategy on every BDI cycle.
         this.rules = new RuleStore();
+
+        this.sensingRevision = 0;
+        this.sensingWaiters = new Set();
+    }
+
+    /** Wakes callers waiting for fresh local or partner state. */
+    advanceSensingRevision() {
+        this.sensingRevision += 1;
+        const waiters = [...this.sensingWaiters];
+        this.sensingWaiters.clear();
+        for (const finish of waiters) finish(true);
+    }
+
+    /** Waits for a later sensing revision or for the remaining deadline. */
+    waitForSensingAfter(revision, timeoutMs) {
+        if (this.sensingRevision > revision) return Promise.resolve(true);
+        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+            return Promise.resolve(false);
+        }
+
+        return new Promise(resolve => {
+            let settled = false;
+            let timeoutId = null;
+            const finish = changed => {
+                if (settled) return;
+                settled = true;
+                this.sensingWaiters.delete(finish);
+                if (timeoutId !== null) clearTimeout(timeoutId);
+                resolve(changed);
+            };
+            this.sensingWaiters.add(finish);
+            timeoutId = setTimeout(() => finish(false), timeoutMs);
+        });
     }
 
     /**
@@ -1041,6 +1085,7 @@ export class Beliefs {
         socket.onYou((payload) => {
             this.me.update(payload);
             shareCurrentState();
+            this.advanceSensingRevision();
         });
 
         socket.onSensing((sensing) => {
@@ -1065,6 +1110,7 @@ export class Beliefs {
                     parcel => !parcel.carriedBy && parcel.reward > 0
                 )
             );
+            this.advanceSensingRevision();
         });
 
         // Chat carries both partner messages and whatever a human types, so a message is only revised into
@@ -1079,7 +1125,9 @@ export class Beliefs {
             }
 
             if (message.kind === 'state') {
-                this.partner.setState(message);
+                if (this.partner.setState(message)) {
+                    this.advanceSensingRevision();
+                }
                 return;
             }
 
@@ -1096,7 +1144,17 @@ export class Beliefs {
             }
 
             if (message.kind === 'hold') {
-                this.rules.setHold(message.hold);
+                const result = this.rules.setHold(message.hold);
+                if (result.ok) this.advanceSensingRevision();
+                return;
+            }
+
+            if (message.kind === 'hold_clear') {
+                if (typeof message.id === 'string' && message.id.trim()) {
+                    if (this.rules.clearHold(message.id)) {
+                        this.advanceSensingRevision();
+                    }
+                }
                 return;
             }
 
