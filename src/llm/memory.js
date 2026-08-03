@@ -1,9 +1,14 @@
 // Every list handed to the model is truncated. A prompt that grows with the
 // game would slow every call down and eventually stop fitting, and the model
-// only needs the nearest candidates to decide what to do next.
+// needs the best few candidates to decide what to do next, not all of them.
 const MAX_PARCELS = 10;
 const MAX_DELIVERIES = 10;
-const MAX_RECENT_EVENTS = 5;
+
+// A mission can run for ten turns, so five lines of history let it forget what
+// it did at the start and repeat it. Fifteen covers a whole mission at three
+// tool calls a turn, and the prompt is rebuilt from scratch against an endpoint
+// the whole course shares, so it does not pay to carry much more than that.
+const MAX_RECENT_EVENTS = 15;
 
 // The history is the only list that survives across turns, so it is the only
 // one that can grow without bound. This is its ceiling.
@@ -19,8 +24,15 @@ const point = ({ x, y }) => `(${x},${y})`;
  * @returns {string}
  */
 export function describeState(beliefs) {
-    const parcels = [...beliefs.parcels.visible.values()]
-        .filter(parcel => !parcel.carriedBy)
+    // The known set, not the visible one: it holds what this agent can see and also what the
+    // partner reported, which is the half of the memory the brief asks to come from exchanging
+    // beliefs. This accessor is the one that re-estimates a reward from when it was observed
+    // and forgets a parcel once that reaches zero, so nothing stale reaches the prompt.
+    // Sorted by reward before truncating, because the ten the model is told about should be
+    // the ten worth telling it about rather than the ten observed longest ago.
+    const parcels = beliefs.parcels
+        .availableKnown(beliefs.world.localDecayIntervalMs)
+        .sort((first, second) => second.reward - first.reward)
         .slice(0, MAX_PARCELS)
         .map(parcel => `${point(parcel)} reward ${parcel.reward}`);
     const deliveries = [...beliefs.world.deliveries.values()]
