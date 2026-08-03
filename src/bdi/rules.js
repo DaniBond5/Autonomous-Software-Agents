@@ -306,6 +306,14 @@ export class RuleStore {
         return this.hold;
     }
 
+    /** Clears only the active hold with the given id. */
+    clearHold(id) {
+        const hold = this.activeHold();
+        if (!hold || hold.id !== id) return false;
+        this.hold = null;
+        return true;
+    }
+
     /** @returns {import("./desires.js").Desire[]} */
     injectedDesires() {
         const hold = this.activeHold();
