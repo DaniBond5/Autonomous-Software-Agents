@@ -95,8 +95,6 @@ export function startLlmAgent(socket) {
     setGoal(DEFAULT_GOAL, null);
     runAgentLoop(beliefs, planner, socket, {
         objectives,
-        isSuspended: () => executor.isDirectActionRunning,
-        getSuspensionRevision: () => executor.directActionRevision,
     }).catch((error) => {
         console.error("[llm] fatal error:", error);
         process.exitCode = 1;

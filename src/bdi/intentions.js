@@ -92,12 +92,16 @@ export function reviseIntention(
         const visibleParcel = beliefs.parcels.visible.get(desire.id);
         return visibleParcel && sameTarget(visibleParcel, me);
     });
-    const active = currentIntention
-        ? desires.find(desire => desireKey(desire) === desireKey(currentIntention))
-        : null;
+    const active = currentIntention?.objectiveId
+        ? desires.find(desire =>
+            desire.objectiveId === currentIntention.objectiveId
+        )
+        : currentIntention
+            ? desires.find(desire => desireKey(desire) === desireKey(currentIntention))
+            : null;
 
-    // The store exposes only one external objective. Its exact id survives revision, while
-    // replacement with the same target still creates and selects a different intention.
+    // An external intention remains valid only while the store exposes the same objective id.
+    // The rule is independent of whether the objective moves, picks up or puts down.
     const externalObjective = desires.find(desire => desire.objectiveId);
     if (externalObjective) return active?.objectiveId ? active : externalObjective;
 
