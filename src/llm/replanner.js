@@ -11,19 +11,12 @@ export class LLMReplanner {
      * @returns {string | null} why to replan, or null when nothing changed
      */
     shouldReplan(memory) {
-        // All three are read before any of them decides, because each reader clears its own
-        // record. A trigger left unread here would still be waiting on the next turn and would
-        // fire then as though it had just happened.
+        // Both are read because each check refreshes its own pending state.
         const failedTool = memory.hasToolFailed();
-        const goalChanged = memory.hasGoalChanged();
         const worldChanged = memory.hasWorldChanged();
 
-        // Most urgent first, and only one wins. A failed tool means the plan is broken rather
-        // than merely dated. A replaced goal means the plan answers a question nobody asked any
-        // more. A changed world is last because the plan often still holds: what moved is a
-        // count it was resting on.
+        // A failed tool invalidates the approach more directly than a changed parcel count.
         if (failedTool) return `the ${failedTool} tool failed`;
-        if (goalChanged) return "the goal was replaced by a new one";
         if (worldChanged) return `you are now carrying ${memory.snapshot.carried} parcels`;
         return null;
     }

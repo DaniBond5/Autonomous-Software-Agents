@@ -1,33 +1,24 @@
 import { wait } from "../bdi/loop.js";
 
-/**
- * Ordinary play is stated as a goal like any other, so the agent has one way
- * of working and not two: a mission that ends simply returns to this goal.
- */
-export const DEFAULT_GOAL = "No one has asked you for anything. Play the game "
-    + "on your own: go back to autonomous play so you can collect parcels and "
-    + "deliver them for points.";
-
 // A turn is several calls to the model. Starting the next one immediately
 // would hammer the endpoint for a game that has barely moved in between.
 const MIN_TURN_INTERVAL_MS = 1000;
 
-// A mission ends when a tool ends it, and nothing guarantees a tool ever does.
-// The three bounds below are the three ways that was seen to fail.
-
-// The model keeps calling tools and never calls resume_autonomous. Ten turns is
-// far more than the few any published mission needs, so hitting this is a fault.
 const MAX_TURNS_PER_MISSION = 10;
-
-// The endpoint is down, and every turn ends the same way. Without this the agent
-// retries for as long as the process lives, and the endpoint is shared with the
-// whole course.
 const MAX_UNREACHABLE_TURNS = 3;
+
+const COMPLETED_FALLBACK = "Mission completed.";
+const MAX_TURNS_MESSAGE = "Mission stopped: maximum number of LLM turns reached.";
+const UNREACHABLE_MESSAGE = "Mission stopped: the language model could not be reached.";
+const INTERNAL_ERROR_MESSAGE = "Mission stopped because of an internal error.";
+
+/**
+ * @typedef {Readonly<{id: number, goal: string, senderId: string}>} Mission
+ */
 
 /**
  * Puts memory, planner, replanner and executor together and drives them.
- * It owns the timing: one turn at a time, spaced out, and a new goal takes
- * over from the one being worked on.
+ * One mission runs to completion while only the latest later mission waits.
  */
 export class LLMAgent {
     /**
@@ -42,34 +33,45 @@ export class LLMAgent {
         this.replanner = replanner;
         this.executor = executor;
 
-        /** True while turns are running, so two of them never overlap. */
-        this.running = false;
+        /** @type {Mission | null} */
+        this.activeMission = null;
 
+        /** @type {Mission | null} */
+        this.pendingMission = null;
+
+        this.processing = false;
+        this.nextMissionId = 1;
         this.lastTurnAt = 0;
     }
 
     /**
-     * Takes a goal in natural language and starts working on it.
+     * Stores a stable mission and starts the processor when it is idle.
      * @param {string} goal
-     * @param {string | null} senderId who asked, or null for the default goal
+     * @param {string} senderId
+     * @returns {Mission}
      */
-    async setGoal(goal, senderId) {
-        console.log(`[llm] goal: ${goal}`);
-        this.memory.setGoal(goal);
-        this.executor.beginMission(senderId);
-
-        if (this.running) {
-            // The turn under way is about the old goal. Stopping it lets the
-            // loop that owns it pick the new one up on its next step.
-            // This is the one case where a goal replaces another, so it is the one the
-            // replanner is told about: a goal arriving with nothing running simply starts
-            // a mission, and there is no approach yet to reconsider.
-            this.memory.noteGoalReplaced();
-            this.executor.cancelActiveObjective("mission replaced");
-            this.planner.abort();
-            return;
+    enqueueMission(goal, senderId) {
+        if (typeof goal !== "string" || !goal.trim()) {
+            throw new TypeError("mission goal must be a non-empty string");
         }
-        await this.run();
+        if (typeof senderId !== "string" || !senderId.trim()) {
+            throw new TypeError("mission sender must be a non-empty string");
+        }
+
+        const mission = Object.freeze({
+            id: this.nextMissionId++,
+            goal: goal.trim(),
+            senderId,
+        });
+
+        if (this.pendingMission) {
+            console.log(
+                `[llm] pending mission ${this.pendingMission.id} replaced by ${mission.id}`
+            );
+        }
+        this.pendingMission = mission;
+        void this.drainMissions();
+        return mission;
     }
 
     /** Waits out the gap between two turns. */
@@ -80,70 +82,99 @@ export class LLMAgent {
     }
 
     /**
-     * Ends the mission and writes the reason into memory, so a later turn reads
-     * why it was stopped instead of starting the same mission over.
-     * @param {string} reason
+     * Runs the active mission, then takes the latest pending one.
+     * A mission error is contained here so it cannot block the next mission.
      */
-    stopMission(reason) {
-        this.memory.remember(this.executor.leaveMission(reason));
-    }
+    async drainMissions() {
+        if (this.processing) return;
+        this.processing = true;
 
-    /**
-     * Runs turns until a tool hands control back to autonomous play.
-     * A turn is capped, so a mission normally takes a few of them; before each
-     * one the replanner says whether the world moved in the meantime.
-     * The three exits below are what make "until a tool hands control back" true:
-     * the default goal means the agent is on a mission even when nobody asked it
-     * anything, so a mission that cannot end is the agent never playing again.
-     */
-    async run() {
-        this.running = true;
-        let turns = 0;
-        let unreachableTurns = 0;
         try {
-            while (this.executor.onMission) {
-                if (turns >= MAX_TURNS_PER_MISSION) {
-                    this.stopMission(`stopped after ${MAX_TURNS_PER_MISSION} turns`);
-                    break;
-                }
-                await this.cooldown();
-                turns += 1;
+            while (this.pendingMission) {
+                const mission = this.pendingMission;
+                this.pendingMission = null;
+                this.activeMission = mission;
 
-                // Asked once: the check clears what it reports, so a second call would say
-                // nothing changed. Both branches run a turn, and what differs is whether
-                // memory carries a line telling the model to reconsider.
-                const reason = this.replanner.shouldReplan(this.memory);
-                const outcome = reason
-                    ? await this.replanner.replan(
-                        this.memory, this.planner, this.executor, reason
-                    )
-                    : await this.planner.runTurn(this.memory, this.executor);
-
-                if (outcome === "unreachable") {
-                    unreachableTurns += 1;
-                    if (unreachableTurns >= MAX_UNREACHABLE_TURNS) {
-                        this.stopMission(
-                            `stopped after ${MAX_UNREACHABLE_TURNS} turns without reaching the model`
-                        );
-                        break;
-                    }
-                    continue;
-                }
-                unreachableTurns = 0;
-
-                // A final answer with no tool call is the model saying it is done.
-                // Taking it at its word is better than asking it again and again.
-                if (outcome === "answered") {
-                    this.stopMission("stopped: the model finished without ending the mission");
-                    break;
+                try {
+                    await this.runMission(mission);
+                } catch (error) {
+                    console.error(`[llm] mission ${mission.id} could not close:`, error);
+                } finally {
+                    this.activeMission = null;
                 }
             }
         } finally {
-            this.running = false;
-            // The one point every exit above passes through, and most of them skip the check
-            // that would otherwise have read these. See forgetPendingChanges.
-            this.memory.forgetPendingChanges();
-            this.memory.setGoal(DEFAULT_GOAL);
+            this.processing = false;
         }
+    }
+
+    /**
+     * Runs one mission and closes all of its state before another can start.
+     * @param {Mission} mission
+     */
+    async runMission(mission) {
+        let response = INTERNAL_ERROR_MESSAGE;
+        let cleanupReason = "mission failed";
+
+        try {
+            console.log(`[llm] mission ${mission.id}: ${mission.goal}`);
+            this.memory.startMission(mission.goal);
+            const result = await this.runMissionTurns();
+            response = result.answer;
+            cleanupReason = result.completed ? "mission finished" : "mission failed";
+        } catch (error) {
+            console.error(`[llm] mission ${mission.id} failed:`, error);
+        }
+
+        try {
+            await this.executor.replyTo(mission.senderId, response);
+        } catch (error) {
+            console.error(`[llm] mission ${mission.id} reply failed:`, error);
+        } finally {
+            try {
+                this.executor.cancelPendingObjective(cleanupReason);
+            } finally {
+                this.memory.finishMission();
+            }
+        }
+    }
+
+    /**
+     * Runs bounded turns until the model returns a final answer.
+     * @returns {Promise<{answer: string, completed: boolean}>}
+     */
+    async runMissionTurns() {
+        let turns = 0;
+        let unreachableTurns = 0;
+
+        while (turns < MAX_TURNS_PER_MISSION) {
+            await this.cooldown();
+            turns += 1;
+
+            const reason = this.replanner.shouldReplan(this.memory);
+            const outcome = reason
+                ? await this.replanner.replan(
+                    this.memory, this.planner, this.executor, reason
+                )
+                : await this.planner.runTurn(this.memory, this.executor);
+
+            if (outcome.status === "unreachable") {
+                unreachableTurns += 1;
+                if (unreachableTurns >= MAX_UNREACHABLE_TURNS) {
+                    return { answer: UNREACHABLE_MESSAGE, completed: false };
+                }
+                continue;
+            }
+
+            unreachableTurns = 0;
+            if (outcome.status === "answered") {
+                return {
+                    answer: outcome.answer || COMPLETED_FALLBACK,
+                    completed: true,
+                };
+            }
+        }
+
+        return { answer: MAX_TURNS_MESSAGE, completed: false };
     }
 }
