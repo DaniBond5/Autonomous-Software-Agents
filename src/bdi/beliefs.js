@@ -2,7 +2,6 @@ import {
     distanceFromSearch,
     shortestPathsFrom
 } from "../utils/geometry.js";
-import { normalizeHandoffObjective } from "./objectives.js";
 import { RuleStore } from "./rules.js";
 
 /**
@@ -1200,14 +1199,20 @@ export class Beliefs {
             }
 
             if (message.kind === 'hold') {
-                const result = this.rules.setHold(message.hold);
-                if (result.ok) this.advanceSensingRevision();
+                if (!objectives) return;
+                try {
+                    objectives.request("hold", message.hold);
+                    this.advanceSensingRevision();
+                } catch {}
                 return;
             }
 
             if (message.kind === 'hold_clear') {
                 if (typeof message.id === 'string' && message.id.trim()) {
-                    if (this.rules.clearHold(message.id)) {
+                    if (objectives?.clear(
+                        message.id.trim(),
+                        "hold cleared by partner"
+                    )) {
                         this.advanceSensingRevision();
                     }
                 }
@@ -1215,13 +1220,15 @@ export class Beliefs {
             }
 
             if (message.kind === 'handoff') {
-                const objective = normalizeHandoffObjective(message.objective);
+                const objective = message.objective;
                 if (!objective
+                    || typeof objective !== 'object'
+                    || Array.isArray(objective)
                     || objective.role !== 'receiver'
                     || objective.receiverId !== this.me.id
                     || !objectives) return;
                 try {
-                    objectives.requestHandoff(objective);
+                    objectives.request("handoff", objective);
                     this.advanceSensingRevision();
                 } catch {}
                 return;

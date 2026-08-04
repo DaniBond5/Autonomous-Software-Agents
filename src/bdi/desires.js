@@ -26,7 +26,9 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  */
 export function desireKey(desire) {
     if (desire.objectiveId) {
-        return `objective:${desire.type}:${desire.objectiveId}`;
+        const x = desire.target?.x ?? "";
+        const y = desire.target?.y ?? "";
+        return `external:${desire.objectiveId}:${desire.phase ?? ""}:${x},${y}`;
     }
     return `${desire.type}:${desire.id ?? ''}:${desire.target.x},${desire.target.y}`;
 }
@@ -278,13 +280,8 @@ export function generateDesires(beliefs, objectives = null) {
         }
     }
 
-    // A goal a mission asked for. It is added outside the exploration branch above because it
-    // holds whatever else the agent has to do, and it competes on utility like anything else.
-    desires.push(...beliefs.rules.injectedDesires());
-
-    // The BDI loop reads the objective published by the LLM as a normal desire.
-    const objectiveDesire = objectives?.getActiveDesire();
-    if (objectiveDesire) desires.push(objectiveDesire);
-
-    return desires;
+    const externalObjective = objectives?.activeDesire() ?? null;
+    return externalObjective
+        ? [externalObjective, ...desires]
+        : desires;
 }

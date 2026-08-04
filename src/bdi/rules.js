@@ -1,6 +1,3 @@
-/** Utility of the one temporary hold goal. */
-const HOLD_UTILITY = 1000;
-
 const COMPARISONS = new Set([
     "above",
     "below",
@@ -27,9 +24,6 @@ export class RuleStore {
 
         /** @type {Map<string,{x:number,y:number}>} */
         this.avoided = new Map();
-
-        /** @type {{id:string,target:{x:number,y:number},utility:number,expiresAt:number}|null} */
-        this.hold = null;
     }
 
     apply(raw) {
@@ -224,55 +218,6 @@ export class RuleStore {
         return this.avoided.has(tileKey(tile));
     }
 
-    /** Validates and replaces the one temporary hold. */
-    setHold(raw) {
-        if (!isObject(raw)
-            || typeof raw.id !== "string"
-            || raw.id.trim() === ""
-            || !Number.isInteger(raw.x)
-            || !Number.isInteger(raw.y)
-            || !Number.isFinite(raw.seconds)
-            || raw.seconds <= 0) {
-            return { ok: false, reason: "a hold needs integer x and y and positive seconds" };
-        }
-
-        this.hold = {
-            id: raw.id.trim(),
-            target: { x: raw.x, y: raw.y },
-            utility: HOLD_UTILITY,
-            expiresAt: Date.now() + raw.seconds * 1000
-        };
-        return {
-            ok: true,
-            summary: `holding at (${raw.x},${raw.y}) for ${raw.seconds} seconds`
-        };
-    }
-
-    /** Returns the active hold, removing it when it has expired. */
-    activeHold() {
-        if (this.hold && this.hold.expiresAt <= Date.now()) this.hold = null;
-        return this.hold;
-    }
-
-    /** Clears only the active hold with the given id. */
-    clearHold(id) {
-        const hold = this.activeHold();
-        if (!hold || hold.id !== id) return false;
-        this.hold = null;
-        return true;
-    }
-
-    /** @returns {import("./desires.js").Desire[]} */
-    injectedDesires() {
-        const hold = this.activeHold();
-        if (!hold) return [];
-        return [{
-            type: "go_to_tile",
-            target: { ...hold.target },
-            utility: hold.utility
-        }];
-    }
-
     describeActive() {
         const lines = [];
         if (this.stackPolicy) {
@@ -301,17 +246,8 @@ export class RuleStore {
             lines.push(`- avoid: ${tiles}`);
         }
 
-        const sections = [lines.length > 0
+        return lines.length > 0
             ? `strategy:\n${lines.join("\n")}`
-            : "strategy: none"];
-        const hold = this.activeHold();
-        if (hold) {
-            const seconds = Math.max(0, Math.round((hold.expiresAt - Date.now()) / 1000));
-            sections.push(
-                `hold:\n- (${hold.target.x},${hold.target.y}), `
-                + `${seconds} seconds remaining`
-            );
-        }
-        return sections.join("\n\n");
+            : "strategy: none";
     }
 }

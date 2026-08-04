@@ -11,7 +11,7 @@ const dbg = (beliefs, ...args) => {
 };
 
 /**
- * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'bfs'|'pddl',intentionKey?:string,kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup',objectiveId?:string}|{action:'putdown',parcelId?:string,objectiveId?:string}} Action
+ * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'bfs'|'pddl',intentionKey?:string,objectiveId?:string,kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup',objectiveId?:string}|{action:'putdown',parcelId?:string,objectiveId?:string}} Action
  */
 
 /**
@@ -74,9 +74,6 @@ function resultForPath(path, terminal, intention, beliefs) {
         return { status: "wait", reason: "ordinary route temporarily blocked" };
     }
     if (path.length === 0) {
-        // A hold plans the same arrival every cycle for as long as it lasts, and saying so each
-        // time buries the rest of the log. Waiting is what a hold is for, and the move that got
-        // the agent here was already logged.
         if (intention.type !== "go_to_tile") {
             dbg(
                 beliefs,
@@ -114,10 +111,10 @@ function resultForPath(path, terminal, intention, beliefs) {
 const navigateOnly = (planner, intention, beliefs) =>
     planner.navigateThen(null, intention, beliefs);
 
-const navigateHandoff = (planner, intention, beliefs, target, action = null) =>
+const navigateHandoff = (planner, intention, beliefs, action = null, target = null) =>
     planner.navigateThen(
-        action ? { ...action, objectiveId: intention.objectiveId } : null,
-        { ...intention, target },
+        action,
+        target ? { ...intention, target } : intention,
         beliefs
     );
 
@@ -126,7 +123,7 @@ const planHandoff = (planner, intention, beliefs) => {
     if (intention.role === "giver") {
         if (intention.phase === "pickup") {
             return navigateHandoff(
-                planner, intention, beliefs, intention.parcelStart, { action: "pickup" }
+                planner, intention, beliefs, { action: "pickup" }
             );
         }
         if (intention.phase === "drop") {
@@ -137,13 +134,11 @@ const planHandoff = (planner, intention, beliefs) => {
                 };
             }
             return navigateHandoff(
-                planner, intention, beliefs, intention.handoffTile,
+                planner, intention, beliefs,
                 { action: "putdown", parcelId: intention.parcelId }
             );
         }
-        return navigateHandoff(
-            planner, intention, beliefs, intention.exitTile
-        );
+        return navigateHandoff(planner, intention, beliefs);
     }
     if (intention.phase === "deliver") {
         if (!carriesSelected) {
@@ -153,7 +148,7 @@ const planHandoff = (planner, intention, beliefs) => {
             };
         }
         return navigateHandoff(
-            planner, intention, beliefs, intention.deliveryTile,
+            planner, intention, beliefs,
             { action: "putdown", parcelId: intention.parcelId }
         );
     }
@@ -167,11 +162,11 @@ const planHandoff = (planner, intention, beliefs) => {
         && samePosition(parcel, intention.handoffTile)
         && !giverOnHandoff) {
         return navigateHandoff(
-            planner, intention, beliefs, intention.handoffTile, { action: "pickup" }
+            planner, intention, beliefs, { action: "pickup" }, intention.handoffTile
         );
     }
 
-    return navigateHandoff(planner, intention, beliefs, intention.waitTile);
+    return navigateHandoff(planner, intention, beliefs);
 };
 
 const planners = {
@@ -208,8 +203,6 @@ export class Planner {
 
         /** @type {{routeKey:string,currentPosition:{x:number,y:number},remainingPath:{x:number,y:number}[]} | null} */
         this.activeDetour = null;
-
-        this.activeObjectiveRoute = null;
 
         /**
          * @type {{intentionKey:string,finalTarget:{x:number,y:number},entry:{x:number,y:number}|null,exit:{x:number,y:number}|null,crateSignature:string,phase:'approach'|'local'|'global'} | null}
@@ -560,17 +553,6 @@ export class Planner {
      */
     async navigateThen(terminal, intention, beliefs) {
         const key = desireKey(intention);
-        if (intention.objectiveId) {
-            const targetKey = POSITION_KEY(intention.target);
-            if (this.activeObjectiveRoute?.objectiveKey !== key
-                || this.activeObjectiveRoute.targetKey !== targetKey) {
-                // One handoff objective changes target as the parcel changes hands.
-                this.resetPlanningState("external objective target changed");
-                this.activeObjectiveRoute = { objectiveKey: key, targetKey };
-            }
-        } else {
-            this.activeObjectiveRoute = null;
-        }
         if (this.activeAgentBlock
             && this.activeAgentBlock.intentionKey !== key) this.resetAgentBlock();
         if (this.activeBfsMoveFailure
@@ -648,7 +630,12 @@ export class Planner {
             this.resetPlanningState("unknown intention type");
             return { status: "unreachable", reason: "unknown intention type" };
         }
-        return handler(this, intention, beliefs);
+        const result = await handler(this, intention, beliefs);
+        if (result.status !== "action" || !intention.objectiveId) return result;
+        return {
+            ...result,
+            action: { ...result.action, objectiveId: intention.objectiveId }
+        };
     }
 
     reconcileBfsMoveOutcome(outcome, beliefs) {

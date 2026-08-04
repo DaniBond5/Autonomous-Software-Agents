@@ -35,21 +35,6 @@ function sameTarget(first, second) {
  * @returns {boolean} true if the given challenger desire is worth abandoning the current goal for, false otherwise.
  */
 function outranks(challenger, active) {
-    // A tile goal that is already running is never given up: it ends when it expires, and
-    // nothing outbids it in the meantime. Its utility only orders it against ordinary desires
-    // while it is the challenger below, so that constant is a tie-breaker and not what keeps
-    // the agent there. It could not be, since a strategy multiplier can lift an ordinary
-    // pickup over any fixed utility by accident.
-    // This is tested first so that a hold does not yield to another hold either.
-    if (active.type === 'go_to_tile') return false;
-
-    // A tile goal the agent is not yet pursuing takes over from whatever is running, because it
-    // is a mission the game gave the agent and it expires on its own. Without this the delivery
-    // guard below would quietly refuse it whenever the agent happens to be carrying a parcel,
-    // which is to say whenever the agent is doing well: the missions worth the most points
-    // would be the ones that never ran.
-    if (challenger.type === 'go_to_tile') return true;
-
     if (challenger.utility <= active.utility) return false;
 
     // A delivery under way is only given up for a pickup that is also closer.

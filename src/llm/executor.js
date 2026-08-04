@@ -312,22 +312,6 @@ function parseTile(input) {
     return { x: Number(numbers[0]), y: Number(numbers[1]) };
 }
 
-/**
- * Reads a tile and a duration for the local hold tool.
- * @param {string} input
- * @returns {{x: number, y: number, seconds: number} | null}
- */
-function parseHold(input) {
-    const numbers = String(input ?? "").match(/-?\d+/g);
-    if (!numbers || numbers.length < 3) return null;
-    const hold = {
-        x: Number(numbers[0]),
-        y: Number(numbers[1]),
-        seconds: Number(numbers[2])
-    };
-    return hold.seconds > 0 ? hold : null;
-}
-
 // Tool descriptions also feed the system prompt below.
 export class LLMExecutor {
     /**
@@ -381,12 +365,6 @@ export class LLMExecutor {
                     + '"multiplier":0}; {"type":"avoid_tile","x":3,"y":6}; '
                     + '{"type":"clear"}.',
                 run: input => this.applyStrategy(input),
-            },
-            hold_at: {
-                description: "Go to a tile and wait there, then go back to playing. Input is "
-                    + 'the tile and the seconds to wait, for example "4,7 30". Use it for a '
-                    + "mission that asks you to be somewhere at a time.",
-                run: input => this.hold(input),
             },
             rendezvous: {
                 description: "Move both agents near one position and wait for both to arrive. "
@@ -459,7 +437,7 @@ export class LLMExecutor {
             );
         }
 
-        const { completion } = this.objectives.requestGoTo(target);
+        const { completion } = this.objectives.request("go_to", { target });
         const result = await completion;
         if (result.status === "succeeded") {
             return success(`Reached (${target.x},${target.y}).`);
@@ -469,7 +447,7 @@ export class LLMExecutor {
     }
 
     async pickUp() {
-        const { completion } = this.objectives.requestPickup();
+        const { completion } = this.objectives.request("pickup");
         const result = await completion;
         if (result.status === "succeeded") return success(result.reason);
         const reason = String(result.reason || "the objective stopped").trim();
@@ -481,7 +459,7 @@ export class LLMExecutor {
     }
 
     async putDown() {
-        const { completion } = this.objectives.requestPutdown();
+        const { completion } = this.objectives.request("putdown");
         const result = await completion;
         if (result.status === "succeeded") return success(result.reason);
         const reason = String(result.reason || "the objective stopped").trim();
@@ -507,26 +485,6 @@ export class LLMExecutor {
         return success(result.text);
     }
 
-    /**
-     * Sends this agent to a tile for a while.
-     * @param {string} input tile and seconds
-     * @returns {Promise<ToolExecutionResult>}
-     */
-    async hold(input) {
-        const hold = parseHold(input);
-        if (!hold) {
-            return failure(`Cannot read "${input}". Write it as x,y seconds.`);
-        }
-
-        const result = this.beliefs.rules.setHold({
-            id: `hold ${hold.x},${hold.y}`,
-            ...hold
-        });
-        return result.ok
-            ? success(result.summary)
-            : failure(`Cannot hold there: ${result.reason}`);
-    }
-
     async waitForRendezvous(center, radius, rendezvousId, deadline) {
         let revision = this.beliefs.sensingRevision;
 
@@ -550,7 +508,7 @@ export class LLMExecutor {
                 );
             }
 
-            if (this.beliefs.rules.activeHold()?.id !== rendezvousId) {
+            if (!this.objectives.isActive(rendezvousId)) {
                 return failure(
                     "Rendezvous stopped because its local hold was replaced."
                 );
@@ -665,10 +623,13 @@ export class LLMExecutor {
             seconds: holdSeconds
         };
 
-        const registered = this.beliefs.rules.setHold(localHold);
-        if (!registered.ok) {
+        try {
+            this.objectives.request("hold", localHold);
+        } catch (error) {
             return failure(
-                `Cannot start rendezvous: ${registered.reason}.`
+                `Cannot start rendezvous: ${error instanceof Error
+                    ? error.message
+                    : "invalid local hold"}.`
             );
         }
 
@@ -688,7 +649,7 @@ export class LLMExecutor {
         } finally {
             // Clear only the hold created by this rendezvous.
             // A newer hold must not be removed.
-            this.beliefs.rules.clearHold(rendezvousId);
+            this.objectives.clear(rendezvousId, "rendezvous cleanup");
             try {
                 this.beliefs.partner.shareHoldClear(rendezvousId);
             } catch (error) {
@@ -800,7 +761,8 @@ export class LLMExecutor {
 
         try {
             // The LLM only requests the action. Both BDI loops execute it.
-            const { completion } = this.objectives.requestHandoff(
+            const { completion } = this.objectives.request(
+                "handoff",
                 giverObjective
             );
             this.beliefs.partner.shareHandoff(receiverObjective);
@@ -858,7 +820,7 @@ to remove the active Level 2 strategies.
 
 For a mission that asks both agents to meet near one position, call rendezvous
 once with the center and maximum Manhattan radius. The tool selects the two
-target tiles and waits for both agents. Do not combine rendezvous with hold_at.
+target tiles and waits for both agents.
 
 For a mission where one agent must pick up a parcel and the teammate must
 deliver the same parcel, call handoff_parcel once with {}. The tool selects the
