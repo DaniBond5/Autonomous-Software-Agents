@@ -8,3 +8,4 @@ node_modules/
 docs/*
 !docs/Report Buondonno-Pektovic.pdf
 !docs/Report Buondonno-Pektovic.tex
+logs/

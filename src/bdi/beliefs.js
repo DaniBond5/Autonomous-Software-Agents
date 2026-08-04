@@ -2,6 +2,7 @@ import {
     distanceFromSearch,
     shortestPathsFrom
 } from "../utils/geometry.js";
+import { trace } from "../utils/trace.js";
 import { RuleStore } from "./rules.js";
 
 export const POSITION_KEY = ({ x, y }) => `${x},${y}`;
@@ -430,6 +431,22 @@ class Agents {
 const HANDOFF_RESULT_STATUSES = new Set([
     'succeeded', 'failed', 'cancelled'
 ]);
+const TRACED_COORDINATION_KINDS = new Set([
+    'strategy', 'hold', 'hold_clear',
+    'handoff', 'handoff_result', 'handoff_clear'
+]);
+
+function traceCoordination(event, kind, fields = {}) {
+    if (!TRACED_COORDINATION_KINDS.has(kind)) return;
+    const nested = fields?.hold ?? fields?.objective;
+    trace("coordination", event, {
+        kind,
+        id: fields?.id ?? nested?.id,
+        role: fields?.role ?? nested?.role,
+        parcel: fields?.parcelId ?? nested?.parcelId,
+        status: fields?.status
+    });
+}
 
 function normalizePartnerState(state) {
     if (!isFinitePosition(state)
@@ -608,6 +625,7 @@ class Partner {
     send(kind, fields = {}) {
         if (!this.isKnown || typeof kind !== 'string' || !kind) return;
         this.socket.emitSay(this.id, { ...fields, kind });
+        traceCoordination("send", kind, fields);
     }
 }
 
@@ -839,17 +857,23 @@ export class Beliefs {
                     return;
                 case 'strategy':
                     // Remote strategies are applied locally and are not echoed back.
-                    this.rules.apply(message.operation);
+                    if (this.rules.apply(message.operation).ok) {
+                        traceCoordination("receive", message.kind, message);
+                    }
                     return;
                 case 'hold':
                     if (!objectives) return;
                     try {
                         objectives.request("hold", message.hold);
+                        traceCoordination("receive", message.kind, message);
                     } catch {}
                     return;
                 case 'hold_clear':
-                    if (typeof message.id === 'string' && message.id.trim()) {
-                        objectives?.clear(
+                    if (objectives
+                        && typeof message.id === 'string'
+                        && message.id.trim()) {
+                        traceCoordination("receive", message.kind, message);
+                        objectives.clear(
                             message.id.trim(),
                             "hold cleared by partner"
                         );
@@ -868,6 +892,7 @@ export class Beliefs {
                             "handoff",
                             objective
                         );
+                        traceCoordination("receive", message.kind, message);
                         void completion.then(result => {
                             this.partner.send("handoff_result", {
                                 id: result.objectiveId,
@@ -879,11 +904,16 @@ export class Beliefs {
                     return;
                 }
                 case 'handoff_result':
-                    this.partner.setHandoffResult(message);
+                    if (this.partner.setHandoffResult(message)) {
+                        traceCoordination("receive", message.kind, message);
+                    }
                     return;
                 case 'handoff_clear':
-                    if (typeof message.id === 'string' && message.id.trim()) {
-                        objectives?.clear(
+                    if (objectives
+                        && typeof message.id === 'string'
+                        && message.id.trim()) {
+                        traceCoordination("receive", message.kind, message);
+                        objectives.clear(
                             message.id.trim(),
                             "handoff cleared by partner"
                         );
