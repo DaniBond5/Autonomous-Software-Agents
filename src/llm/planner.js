@@ -116,21 +116,18 @@ export class LLMPlanner {
             }
 
             const result = await executor.run(parsed.action, parsed.input);
-            dbg(`observation: ${result.observation}`);
-            if (result.replanReason === null) {
-                const tool = parsed.input
-                    ? `${parsed.action} ${parsed.input}`
-                    : parsed.action;
-                memory.remember(
-                    `${tool} -> ${result.observation}`
-                );
-            } else if (typeof result.replanReason === "string") {
+            dbg(`tool result: ${result.text}`);
+            const toolCall = parsed.input
+                ? `${parsed.action} ${parsed.input}`
+                : parsed.action;
+            if (result.ok === true) {
+                memory.remember(`${toolCall} -> ${result.text}`);
+            } else if (result.ok === false) {
                 replanner.replan(
                     memory,
                     parsed.action,
                     parsed.input,
-                    result.observation,
-                    result.replanReason
+                    result.text
                 );
             }
         }

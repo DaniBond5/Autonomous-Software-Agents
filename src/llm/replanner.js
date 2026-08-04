@@ -3,20 +3,16 @@ export class LLMReplanner {
      * @param {import("./memory.js").LLMMemory} memory
      * @param {string} action
      * @param {string} input
-     * @param {string} observation
      * @param {string} reason
      */
-    replan(memory, action, input, observation, reason) {
-        const actionName = String(action ?? "").trim();
-        const actionInput = String(input ?? "").trim();
-        const tool = actionInput ? `${actionName} ${actionInput}` : actionName;
-        const result = String(observation ?? "").trim();
-        const concreteReason = String(reason ?? "").trim();
+    replan(memory, action, input, reason) {
+        const tool = input ? `${action} ${input}` : action;
+        const sentence = /[.!?]$/.test(reason) ? reason : `${reason}.`;
 
-        console.log(`[llm] replanning: ${concreteReason}`);
+        console.log(`[llm] replanning: ${reason}`);
         memory.remember(
-            `Previous action ${tool} failed: ${result}. `
-            + `Reason: ${concreteReason}. Choose a different valid approach.`
+            `Previous action ${tool} failed: ${sentence} `
+            + "Choose a different valid approach."
         );
     }
 }

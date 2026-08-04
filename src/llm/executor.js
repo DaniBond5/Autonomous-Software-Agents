@@ -15,49 +15,14 @@ const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
 };
 
-/**
- * @typedef {Object} ToolExecutionResult
- * @property {boolean} ok
- * @property {string} observation
- * @property {string | null} replanReason
- */
+/** @typedef {{ok: boolean, text: string}} ToolExecutionResult */
 
-/** @param {string} observation @returns {ToolExecutionResult} */
-function success(observation) {
-    if (typeof observation !== "string") {
-        throw new TypeError("a successful tool result needs a string observation");
-    }
-    const text = observation.trim();
-    if (!text) throw new TypeError("a successful tool result needs an observation");
-    return { ok: true, observation: text, replanReason: null };
-}
-
-/**
- * @param {string} observation
- * @param {string} replanReason
- * @returns {ToolExecutionResult}
- */
-function failure(observation, replanReason) {
-    if (typeof observation !== "string" || typeof replanReason !== "string") {
-        throw new TypeError("a failed tool result needs string fields");
-    }
-    const text = observation.trim();
-    const reason = replanReason.trim();
-    if (!text || !reason) {
-        throw new TypeError("a failed tool result needs an observation and a replan reason");
-    }
-    return { ok: false, observation: text, replanReason: reason };
-}
+const success = text => ({ ok: true, text });
+const failure = text => ({ ok: false, text });
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
 const STRATEGY_SCOPES = new Set(["me", "teammate", "both"]);
-const RENDEZVOUS_REPLAN_REASON = "the rendezvous could not be started or completed";
-const HANDOFF_REPLAN_REASON = "the parcel handoff could not be started or completed";
-const rendezvousFailure = observation =>
-    failure(observation, RENDEZVOUS_REPLAN_REASON);
-const handoffFailure = observation =>
-    failure(observation, HANDOFF_REPLAN_REASON);
 
 const isObject = value => value !== null
     && typeof value === "object"
@@ -372,8 +337,7 @@ function parseHold(input) {
  * The tools the model can call, and the only place they are described.
  * The system prompt is generated from this registry, so a new tool becomes
  * available to the model as soon as it is added here.
- * Every tool returns a structured result. The model sees the observation,
- * while a semantic failure also gives the planner one clear replan reason.
+ * Every tool returns one success flag and one text for the next model step.
  */
 export class LLMExecutor {
     /**
@@ -412,8 +376,7 @@ export class LLMExecutor {
                     const value = evaluateExpression(expression);
                     return value === null
                         ? failure(
-                            `Cannot compute "${expression}": only numbers, + - * / and parentheses are allowed.`,
-                            "the calculation input was invalid"
+                            `Cannot compute "${expression}": only numbers, + - * / and parentheses are allowed.`
                         )
                         : success(`${expression} = ${value}`);
                 },
@@ -493,8 +456,8 @@ export class LLMExecutor {
     }
 
     /**
-     * Runs one known tool and checks that it returned a consistent result.
-     * Unexpected errors are logged here but only a safe observation reaches the model.
+     * Runs one known tool. Unexpected errors are logged here, while the model
+     * receives only a safe result.
      * @param {string} name
      * @param {string} input
      * @returns {Promise<ToolExecutionResult>}
@@ -504,34 +467,16 @@ export class LLMExecutor {
         if (!toolName || !Object.hasOwn(this.tools, toolName)) {
             const shownName = toolName || "(empty)";
             return failure(
-                `Unknown tool: ${shownName}. Available tools: ${Object.keys(this.tools).join(", ")}.`,
-                toolName
-                    ? `the selected tool "${toolName}" does not exist`
-                    : "the selected tool name was invalid"
+                `Unknown tool: ${shownName}. Available tools: ${Object.keys(this.tools).join(", ")}.`
             );
         }
 
-        const tool = this.tools[toolName];
         dbg(`${toolName}(${input ?? ""})`);
         try {
-            const result = await tool.run(input);
-            const validSuccess = result?.ok === true
-                && result.replanReason === null;
-            const validFailure = result?.ok === false
-                && typeof result.replanReason === "string"
-                && Boolean(result.replanReason.trim());
-            if ((!validSuccess && !validFailure)
-                || typeof result?.observation !== "string"
-                || !result.observation.trim()) {
-                throw new TypeError(`${toolName} returned an invalid tool result`);
-            }
-            return result;
+            return await this.tools[toolName].run(input);
         } catch (error) {
             console.error(`[llm] ${toolName} tool failed unexpectedly:`, error);
-            return failure(
-                "The tool failed because of an internal error.",
-                `the ${toolName} tool failed unexpectedly`
-            );
+            return failure("The tool failed because of an internal error.");
         }
     }
 
@@ -544,8 +489,7 @@ export class LLMExecutor {
         const target = parseTile(input);
         if (!target) {
             return failure(
-                `Cannot read "${input}" as a tile. Write it as x,y.`,
-                "the go_to input was not a valid tile"
+                `Cannot read "${input}" as a tile. Write it as x,y.`
             );
         }
 
@@ -556,16 +500,12 @@ export class LLMExecutor {
         }
         if (result.status === "failed") {
             const reason = String(result.reason || "no path was found").trim();
-            return failure(
-                `Cannot reach (${target.x},${target.y}): ${reason}`,
-                `the target tile (${target.x},${target.y}) could not be reached: ${reason}`
-            );
+            return failure(`Cannot reach (${target.x},${target.y}): ${reason}`);
         }
         if (result.status === "cancelled") {
             const reason = String(result.reason || "the objective was cancelled").trim();
             return failure(
-                `Go-to (${target.x},${target.y}) was cancelled: ${reason}`,
-                `the go_to objective for (${target.x},${target.y}) was cancelled: ${reason}`
+                `Go-to (${target.x},${target.y}) was cancelled: ${reason}`
             );
         }
         throw new TypeError("go_to received an unknown objective result");
@@ -582,18 +522,14 @@ export class LLMExecutor {
         if (result.status === "failed") {
             const reason = String(result.reason || "pickup failed").trim();
             return failure(
-                `Pickup failed: ${reason}`,
                 reason === "no parcels were picked up"
-                    ? "there were no parcels available on the current tile"
-                    : `the pickup could not be completed: ${reason}`
+                    ? "Pickup failed: there are no parcels on the current tile."
+                    : `Pickup failed: ${reason}`
             );
         }
         if (result.status === "cancelled") {
             const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(
-                `Pickup was cancelled: ${reason}`,
-                `the pickup objective was cancelled: ${reason}`
-            );
+            return failure(`Pickup was cancelled: ${reason}`);
         }
         throw new TypeError("pick_up received an unknown objective result");
     }
@@ -608,20 +544,11 @@ export class LLMExecutor {
         if (result.status === "succeeded") return success(result.reason);
         if (result.status === "failed") {
             const reason = String(result.reason || "putdown failed").trim();
-            let replanReason = `the putdown could not be completed: ${reason}`;
-            if (reason === "not carrying any parcels") {
-                replanReason = "the agent is not carrying any parcels to put down";
-            } else if (reason === "no parcels were put down") {
-                replanReason = "no parcels were put down on the current tile";
-            }
-            return failure(`Putdown failed: ${reason}`, replanReason);
+            return failure(`Putdown failed: ${reason}`);
         }
         if (result.status === "cancelled") {
             const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(
-                `Putdown was cancelled: ${reason}`,
-                `the putdown objective was cancelled: ${reason}`
-            );
+            return failure(`Putdown was cancelled: ${reason}`);
         }
         throw new TypeError("put_down received an unknown objective result");
     }
@@ -632,16 +559,10 @@ export class LLMExecutor {
         try {
             raw = JSON.parse(String(input ?? ""));
         } catch {
-            return failure(
-                "Cannot apply strategy: the input is not valid JSON.",
-                "the requested strategy could not be applied to the selected scope"
-            );
+            return failure("Cannot apply strategy: the input is not valid JSON.");
         }
         if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-            return failure(
-                "Cannot apply strategy: the input must be one JSON object.",
-                "the requested strategy could not be applied to the selected scope"
-            );
+            return failure("Cannot apply strategy: the input must be one JSON object.");
         }
 
         const { scope = "me", type: _ignoredType, ...fields } = raw;
@@ -655,17 +576,13 @@ export class LLMExecutor {
     applyScopedStrategy(rawOperation, scope) {
         if (!STRATEGY_SCOPES.has(scope)) {
             return failure(
-                'Cannot apply strategy: scope must be "me", "teammate", or "both".',
-                "the requested strategy could not be applied to the selected scope"
+                'Cannot apply strategy: scope must be "me", "teammate", or "both".'
             );
         }
 
         const normalized = normalizeStrategyOperation(rawOperation);
         if (!normalized.ok) {
-            return failure(
-                `Cannot apply strategy: ${normalized.reason}.`,
-                "the requested strategy could not be applied to the selected scope"
-            );
+            return failure(`Cannot apply strategy: ${normalized.reason}.`);
         }
         const operation = normalized.operation;
 
@@ -675,34 +592,28 @@ export class LLMExecutor {
             );
             if (unknown) {
                 return failure(
-                    `Cannot apply strategy: (${unknown.x},${unknown.y}) is not a known delivery tile.`,
-                    "the requested strategy could not be applied to the selected scope"
+                    `Cannot apply strategy: (${unknown.x},${unknown.y}) is not a known delivery tile.`
                 );
             }
         }
         if (operation.type === "avoid_tile"
             && !this.beliefs.world.tiles.has(`${operation.x},${operation.y}`)) {
             return failure(
-                `Cannot apply strategy: (${operation.x},${operation.y}) is not a known map tile.`,
-                "the requested strategy could not be applied to the selected scope"
+                `Cannot apply strategy: (${operation.x},${operation.y}) is not a known map tile.`
             );
         }
 
         const includesTeammate = scope === "teammate" || scope === "both";
         if (includesTeammate && !this.beliefs.partner.isKnown) {
             return failure(
-                "Cannot apply the policy to the teammate: no partner is configured.",
-                "the requested strategy could not be applied to the selected scope"
+                "Cannot apply the policy to the teammate: no partner is configured."
             );
         }
 
         if (scope === "me" || scope === "both") {
             const applied = applyStrategyOperation(this.beliefs.rules, operation);
             if (!applied.ok) {
-                return failure(
-                    `Cannot apply strategy: ${applied.reason}.`,
-                    "the requested strategy could not be applied to the selected scope"
-                );
+                return failure(`Cannot apply strategy: ${applied.reason}.`);
             }
         }
         if (includesTeammate) this.beliefs.partner.shareStrategy(operation);
@@ -742,10 +653,7 @@ export class LLMExecutor {
     async hold(input) {
         const hold = parseHold(input);
         if (!hold) {
-            return failure(
-                `Cannot read "${input}". Write it as x,y seconds.`,
-                "the hold_at input was invalid"
-            );
+            return failure(`Cannot read "${input}". Write it as x,y seconds.`);
         }
 
         const result = this.beliefs.rules.setHold({
@@ -754,10 +662,7 @@ export class LLMExecutor {
         });
         return result.ok
             ? success(result.summary)
-            : failure(
-                `Cannot hold there: ${result.reason}`,
-                `the hold request was invalid: ${result.reason}`
-            );
+            : failure(`Cannot hold there: ${result.reason}`);
     }
 
     async waitForRendezvous(center, radius, rendezvousId, deadline) {
@@ -765,7 +670,7 @@ export class LLMExecutor {
 
         while (Date.now() < deadline) {
             if (!this.beliefs.partner.isKnown) {
-                return rendezvousFailure(
+                return failure(
                     "Rendezvous failed because the partner is no longer available."
                 );
             }
@@ -773,18 +678,18 @@ export class LLMExecutor {
             const myPosition = this.beliefs.me.pos;
             const partnerPosition = this.beliefs.partner.state;
             if (!isIntegerPosition(myPosition)) {
-                return rendezvousFailure(
+                return failure(
                     "Rendezvous failed because the local position is unavailable."
                 );
             }
             if (!isIntegerPosition(partnerPosition)) {
-                return rendezvousFailure(
+                return failure(
                     "Rendezvous failed because the partner position is unavailable."
                 );
             }
 
             if (this.beliefs.rules.activeHold()?.id !== rendezvousId) {
-                return rendezvousFailure(
+                return failure(
                     "Rendezvous stopped because its local hold was replaced."
                 );
             }
@@ -804,7 +709,7 @@ export class LLMExecutor {
             revision = this.beliefs.sensingRevision;
         }
 
-        return rendezvousFailure(
+        return failure(
             "Rendezvous failed: both agents did not reach the requested area before the deadline."
         );
     }
@@ -815,42 +720,42 @@ export class LLMExecutor {
         try {
             request = JSON.parse(String(input ?? ""));
         } catch {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the input is not valid JSON."
             );
         }
         if (!isObject(request)) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the input must be one JSON object."
             );
         }
         if (!Number.isInteger(request.x) || !Number.isInteger(request.y)
             || !Number.isInteger(request.radius) || request.radius < 0) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: x and y must be integers and radius must be a non-negative integer."
             );
         }
 
         const world = this.beliefs.world;
         if (world.tiles.size === 0 || world.width <= 0 || world.height <= 0) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the map is not available yet."
             );
         }
         if (!this.beliefs.partner.isKnown) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: no partner is configured."
             );
         }
         if (!isIntegerPosition(this.beliefs.me.pos)
             || !isPositionTraversable(this.beliefs, this.beliefs.me.pos)) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the local position is unavailable."
             );
         }
         if (!isIntegerPosition(this.beliefs.partner.state)
             || !isPositionTraversable(this.beliefs, this.beliefs.partner.state)) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the partner position is unavailable."
             );
         }
@@ -862,12 +767,12 @@ export class LLMExecutor {
             request.radius
         );
         if (!selection.regionIntersectsMap) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the requested area does not intersect the known map."
             );
         }
         if (!selection.assignment) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: there are not two distinct reachable tiles inside the requested area."
             );
         }
@@ -900,7 +805,7 @@ export class LLMExecutor {
 
         const registered = this.beliefs.rules.setHold(localHold);
         if (!registered.ok) {
-            return rendezvousFailure(
+            return failure(
                 `Cannot start rendezvous: ${registered.reason}.`
             );
         }
@@ -915,7 +820,7 @@ export class LLMExecutor {
             );
         } catch (error) {
             console.error("[llm] rendezvous coordination failed:", error);
-            return rendezvousFailure(
+            return failure(
                 "Rendezvous failed because coordination could not be completed."
             );
         } finally {
@@ -949,7 +854,7 @@ export class LLMExecutor {
 
             if (giverResult?.status === "failed"
                 || giverResult?.status === "cancelled") {
-                return handoffFailure(
+                return failure(
                     `Parcel handoff failed: ${giverResult.reason || "the giver objective stopped"}.`
                 );
             }
@@ -969,7 +874,7 @@ export class LLMExecutor {
             revision = this.beliefs.sensingRevision;
         }
 
-        return handoffFailure(
+        return failure(
             "Parcel handoff failed: the delivery was not completed before the deadline."
         );
     }
@@ -980,7 +885,7 @@ export class LLMExecutor {
             request = JSON.parse(String(input ?? ""));
         } catch {}
         if (!isObject(request) || Object.keys(request).length !== 0) {
-            return handoffFailure(
+            return failure(
                 "Cannot start parcel handoff: the input must be {}."
             );
         }
@@ -992,14 +897,14 @@ export class LLMExecutor {
             || !isIntegerPosition(this.beliefs.me.pos)
             || !isIntegerPosition(this.beliefs.partner.state)
             || !Array.isArray(this.beliefs.partner.state?.carriedParcelIds)) {
-            return handoffFailure(
+            return failure(
                 "Cannot start parcel handoff: the live map or agent state is unavailable."
             );
         }
 
         const configuration = selectHandoffConfiguration(this.beliefs);
         if (!configuration) {
-            return handoffFailure(
+            return failure(
                 "Parcel handoff failed: no safe exchange configuration is reachable by both agents."
             );
         }
@@ -1044,7 +949,7 @@ export class LLMExecutor {
             );
         } catch (error) {
             console.error("[llm] parcel handoff coordination failed:", error);
-            return handoffFailure(
+            return failure(
                 "Parcel handoff failed because coordination could not be completed."
             );
         } finally {
