@@ -16,6 +16,9 @@ const dbg = (...args) => {
 const success = text => ({ ok: true, text });
 const failure = text => ({ ok: false, text });
 
+const RENDEZVOUS_POLL_MS = 100;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
 
@@ -180,72 +183,48 @@ function selectHandoffConfiguration(beliefs) {
     return configurations[0] ?? null;
 }
 
-function compareRendezvousAssignments(first, second) {
-    const firstRank = [
-        Math.max(first.myDistance, first.partnerDistance),
-        first.myDistance + first.partnerDistance,
-        first.myTarget.x,
-        first.myTarget.y,
-        first.partnerTarget.x,
-        first.partnerTarget.y
-    ];
-    const secondRank = [
-        Math.max(second.myDistance, second.partnerDistance),
-        second.myDistance + second.partnerDistance,
-        second.myTarget.x,
-        second.myTarget.y,
-        second.partnerTarget.x,
-        second.partnerTarget.y
-    ];
-    for (let index = 0; index < firstRank.length; index += 1) {
-        if (firstRank[index] !== secondRank[index]) {
-            return firstRank[index] - secondRank[index];
-        }
-    }
-    return 0;
-}
-
 function selectRendezvousTargets(beliefs, center, radius) {
-    const region = [...beliefs.world.tiles.values()]
+    const candidates = [...beliefs.world.tiles.values()]
         .filter(tile => isIntegerPosition(tile)
-            && manhattanDistance(tile, center) <= radius)
-        .map(tile => ({ x: tile.x, y: tile.y }));
-    const candidates = region.filter(tile =>
-        isPositionTraversable(beliefs, tile)
-        && !beliefs.rules.isAvoided(tile)
-    );
-    const isBlockedByCrate = position => beliefs.crates.isOccupied(position);
+            && manhattanDistance(tile, center) <= radius
+            && isPositionTraversable(beliefs, tile)
+            && !beliefs.rules.isAvoided(tile))
+        .map(copyPoint);
+    const isBlocked = position => beliefs.crates.isOccupied(position);
     const myPaths = shortestPathsFrom(beliefs, beliefs.me.pos, {
-        isBlocked: isBlockedByCrate
+        isBlocked
     });
     const partnerPaths = shortestPathsFrom(beliefs, beliefs.partner.state, {
-        isBlocked: isBlockedByCrate
+        isBlocked
     });
+    const reachableFrom = search => candidates
+        .map(tile => ({
+            tile,
+            distance: distanceFromSearch(search, tile)
+        }))
+        .filter(candidate => Number.isFinite(candidate.distance))
+        .sort((first, second) =>
+            first.distance - second.distance
+            || compareTiles(first.tile, second.tile)
+        );
+    const myCandidates = reachableFrom(myPaths);
+    const partnerCandidates = reachableFrom(partnerPaths);
 
-    let best = null;
-    for (const myTarget of candidates) {
-        const myDistance = distanceFromSearch(myPaths, myTarget);
-        if (!Number.isFinite(myDistance)) continue;
-
-        for (const partnerTarget of candidates) {
-            if (myTarget.x === partnerTarget.x
-                && myTarget.y === partnerTarget.y) continue;
-            const partnerDistance = distanceFromSearch(partnerPaths, partnerTarget);
-            if (!Number.isFinite(partnerDistance)) continue;
-
-            const assignment = {
-                myTarget,
-                partnerTarget,
-                myDistance,
-                partnerDistance
+    for (const mine of myCandidates) {
+        const theirs = partnerCandidates.find(candidate =>
+            !samePosition(candidate.tile, mine.tile)
+        );
+        if (theirs) {
+            return {
+                myTarget: mine.tile,
+                partnerTarget: theirs.tile,
+                myDistance: mine.distance,
+                partnerDistance: theirs.distance
             };
-            if (!best || compareRendezvousAssignments(assignment, best) < 0) {
-                best = assignment;
-            }
         }
     }
 
-    return { regionIntersectsMap: region.length > 0, assignment: best };
+    return null;
 }
 
 /**
@@ -486,32 +465,22 @@ export class LLMExecutor {
     }
 
     async waitForRendezvous(center, radius, rendezvousId, deadline) {
-        let revision = this.beliefs.sensingRevision;
-
         while (Date.now() < deadline) {
             if (!this.beliefs.partner.isKnown) {
-                return failure(
-                    "Rendezvous failed because the partner is no longer available."
-                );
+                return failure("Rendezvous failed because the partner is no longer available.");
             }
 
             const myPosition = this.beliefs.me.pos;
             const partnerPosition = this.beliefs.partner.state;
             if (!isIntegerPosition(myPosition)) {
-                return failure(
-                    "Rendezvous failed because the local position is unavailable."
-                );
+                return failure("Rendezvous failed because the local position is unavailable.");
             }
             if (!isIntegerPosition(partnerPosition)) {
-                return failure(
-                    "Rendezvous failed because the partner position is unavailable."
-                );
+                return failure("Rendezvous failed because the partner position is unavailable.");
             }
 
             if (!this.objectives.isActive(rendezvousId)) {
-                return failure(
-                    "Rendezvous stopped because its local hold was replaced."
-                );
+                return failure("Rendezvous stopped because its local hold was replaced.");
             }
 
             const bothInside = manhattanDistance(myPosition, center) <= radius
@@ -524,9 +493,9 @@ export class LLMExecutor {
             }
 
             const remainingMs = deadline - Date.now();
-            if (remainingMs <= 0) break;
-            await this.beliefs.waitForSensingAfter(revision, remainingMs);
-            revision = this.beliefs.sensingRevision;
+            if (remainingMs > 0) {
+                await sleep(Math.min(RENDEZVOUS_POLL_MS, remainingMs));
+            }
         }
 
         return failure(
@@ -534,7 +503,6 @@ export class LLMExecutor {
         );
     }
 
-    /** Selects two targets, installs their holds, and waits for both BDI agents. */
     async rendezvous(input) {
         let request;
         try {
@@ -557,11 +525,6 @@ export class LLMExecutor {
         }
 
         const world = this.beliefs.world;
-        if (world.tiles.size === 0 || world.width <= 0 || world.height <= 0) {
-            return failure(
-                "Cannot start rendezvous: the map is not available yet."
-            );
-        }
         if (!this.beliefs.partner.isKnown) {
             return failure(
                 "Cannot start rendezvous: no partner is configured."
@@ -586,25 +549,18 @@ export class LLMExecutor {
             center,
             request.radius
         );
-        if (!selection.regionIntersectsMap) {
+        if (!selection) {
             return failure(
-                "Cannot start rendezvous: the requested area does not intersect the known map."
-            );
-        }
-        if (!selection.assignment) {
-            return failure(
-                "Cannot start rendezvous: there are not two distinct reachable tiles inside the requested area."
+                "Cannot start rendezvous: no two distinct reachable tiles exist inside the requested area."
             );
         }
 
-        // The runtime selects two different reachable tiles.
-        // Both BDI loops remain responsible for movement.
         const { myTarget, partnerTarget, myDistance, partnerDistance } =
-            selection.assignment;
-        const longestDistance = Math.max(myDistance, partnerDistance);
-        const movementDuration = world.movementDurationMs();
-        const timeoutMoves = longestDistance + world.width + world.height;
-        const timeoutMs = timeoutMoves * movementDuration;
+            selection;
+        const timeoutMoves = Math.max(myDistance, partnerDistance)
+            + world.width
+            + world.height;
+        const timeoutMs = timeoutMoves * world.movementDurationMs();
         const holdSeconds = Math.ceil(timeoutMs / 1000) + 1;
         const startedAt = Date.now();
         const ownerId = String(this.beliefs.me.id || "agent").trim() || "agent";
@@ -641,19 +597,12 @@ export class LLMExecutor {
                 rendezvousId,
                 deadline
             );
-        } catch (error) {
-            console.error("[llm] rendezvous coordination failed:", error);
-            return failure(
-                "Rendezvous failed because coordination could not be completed."
-            );
         } finally {
-            // Clear only the hold created by this rendezvous.
-            // A newer hold must not be removed.
             this.objectives.clear(rendezvousId, "rendezvous cleanup");
             try {
                 this.beliefs.partner.shareHoldClear(rendezvousId);
             } catch (error) {
-                console.warn("[llm] rendezvous cleanup message failed:", error);
+                dbg("rendezvous cleanup message failed", error);
             }
         }
     }
