@@ -3,7 +3,7 @@ import {
     shortestPathsFrom
 } from "../utils/geometry.js";
 import { normalizeHandoffObjective } from "./objectives.js";
-import { RuleStore, applyStrategyOperation } from "./rules.js";
+import { RuleStore } from "./rules.js";
 
 /**
  * This constant is used to convert position coordinates into a standard key to be used for all data structures that involve positions and need one.
@@ -1193,10 +1193,9 @@ export class Beliefs {
                 return;
             }
 
-            // Scope controls where the same normalized operation is applied.
-            // The receiver stores it locally and does not send it back.
+            // Remote strategies are applied locally and are not echoed back.
             if (message.kind === 'strategy') {
-                applyStrategyOperation(this.rules, message.operation);
+                this.rules.apply(message.operation);
                 return;
             }
 

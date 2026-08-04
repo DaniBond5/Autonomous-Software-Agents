@@ -1,8 +1,4 @@
 import config from "../config.js";
-import {
-    applyStrategyOperation,
-    normalizeStrategyOperation
-} from "../bdi/rules.js";
 import { preferOperationalDeliveryCandidates } from "../bdi/desires.js";
 import {
     distanceFromSearch,
@@ -22,7 +18,6 @@ const failure = text => ({ ok: false, text });
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
-const STRATEGY_SCOPES = new Set(["me", "teammate", "both"]);
 
 const isObject = value => value !== null
     && typeof value === "object"
@@ -376,35 +371,16 @@ export class LLMExecutor {
                         : success(`${expression} = ${value}`);
                 },
             },
-            set_stack_policy: {
-                description: "Deliver only exact stacks of parcels. Input is JSON with "
-                    + 'count, multiplier, and optional scope, for example '
-                    + '{"count":3,"multiplier":2,"scope":"me"}.',
-                run: input => this.runStrategyTool(input, "set_stack"),
-            },
-            set_delivery_policy: {
-                description: "Set one multiplier for one or more known delivery tiles. "
-                    + "Input is JSON with tiles, multiplier, and optional scope, for example "
-                    + '{"tiles":[{"x":4,"y":7}],"multiplier":5,"scope":"both"}.',
-                run: input => this.runStrategyTool(input, "set_delivery"),
-            },
-            set_parcel_value_policy: {
-                description: "Set a multiplier for parcels above, below, at_least, or at_most "
-                    + "one value. Input is JSON with comparison, value, multiplier, and "
-                    + 'optional scope, for example {"comparison":"above","value":10,'
-                    + '"multiplier":0,"scope":"me"}.',
-                run: input => this.runStrategyTool(input, "set_parcel_value"),
-            },
-            avoid_tile: {
-                description: "Never walk through one known map tile. Input is JSON with x, y, "
-                    + 'and optional scope, for example {"x":3,"y":6,"scope":"both"}.',
-                run: input => this.runStrategyTool(input, "avoid_tile"),
-            },
-            clear_strategy: {
-                description: "Remove the selected agents' active Level 2 policies without "
-                    + "removing a temporary hold. Input is JSON with optional scope, for "
-                    + 'example {"scope":"both"}.',
-                run: input => this.runStrategyTool(input, "clear"),
+            set_strategy: {
+                description: "Set one Level 2 strategy that remains active after the mission "
+                    + "for this agent and its configured teammate. Input is one JSON object "
+                    + "in one of these forms: "
+                    + '{"type":"set_stack","count":3,"multiplier":2}; '
+                    + '{"type":"set_delivery","tiles":[{"x":4,"y":7}],"multiplier":5}; '
+                    + '{"type":"set_parcel_value","comparison":"above","value":10,'
+                    + '"multiplier":0}; {"type":"avoid_tile","x":3,"y":6}; '
+                    + '{"type":"clear"}.',
+                run: input => this.applyStrategy(input),
             },
             hold_at: {
                 description: "Go to a tile and wait there, then go back to playing. Input is "
@@ -512,96 +488,23 @@ export class LLMExecutor {
         return failure(`Putdown failed: ${reason}`);
     }
 
-    /** Parses one semantic tool input and sends it through the scoped strategy path. */
-    runStrategyTool(input, type) {
+    applyStrategy(input) {
         let raw;
         try {
             raw = JSON.parse(String(input ?? ""));
         } catch {
             return failure("Cannot apply strategy: the input is not valid JSON.");
         }
-        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        if (!isObject(raw)) {
             return failure("Cannot apply strategy: the input must be one JSON object.");
         }
 
-        const { scope = "me", type: _ignoredType, ...fields } = raw;
-        return this.applyScopedStrategy({ type, ...fields }, scope);
-    }
-
-    /**
-     * Scope controls where the same normalized operation is applied.
-     * Each receiver stores it locally and does not send it back.
-     */
-    applyScopedStrategy(rawOperation, scope) {
-        if (!STRATEGY_SCOPES.has(scope)) {
-            return failure(
-                'Cannot apply strategy: scope must be "me", "teammate", or "both".'
-            );
+        const result = this.beliefs.rules.apply(raw);
+        if (!result.ok) return failure(`Cannot apply strategy: ${result.text}`);
+        if (this.beliefs.partner.isKnown) {
+            this.beliefs.partner.shareStrategy(result.operation);
         }
-
-        const normalized = normalizeStrategyOperation(rawOperation);
-        if (!normalized.ok) {
-            return failure(`Cannot apply strategy: ${normalized.reason}.`);
-        }
-        const operation = normalized.operation;
-
-        if (operation.type === "set_delivery") {
-            const unknown = operation.tiles.find(tile =>
-                !this.beliefs.world.deliveries.has(`${tile.x},${tile.y}`)
-            );
-            if (unknown) {
-                return failure(
-                    `Cannot apply strategy: (${unknown.x},${unknown.y}) is not a known delivery tile.`
-                );
-            }
-        }
-        if (operation.type === "avoid_tile"
-            && !this.beliefs.world.tiles.has(`${operation.x},${operation.y}`)) {
-            return failure(
-                `Cannot apply strategy: (${operation.x},${operation.y}) is not a known map tile.`
-            );
-        }
-
-        const includesTeammate = scope === "teammate" || scope === "both";
-        if (includesTeammate && !this.beliefs.partner.isKnown) {
-            return failure(
-                "Cannot apply the policy to the teammate: no partner is configured."
-            );
-        }
-
-        if (scope === "me" || scope === "both") {
-            const applied = applyStrategyOperation(this.beliefs.rules, operation);
-            if (!applied.ok) {
-                return failure(`Cannot apply strategy: ${applied.reason}.`);
-            }
-        }
-        if (includesTeammate) this.beliefs.partner.shareStrategy(operation);
-
-        return success(this.strategyObservation(operation, scope));
-    }
-
-    strategyObservation(operation, scope) {
-        const target = scope === "me"
-            ? "this agent"
-            : scope === "teammate"
-                ? "the teammate"
-                : "both agents";
-        switch (operation.type) {
-            case "set_stack":
-                return `Stack policy set for ${target}: deliver exactly ${operation.count} `
-                    + `parcels with multiplier ${operation.multiplier}.`;
-            case "set_delivery":
-                return `Delivery policy set for ${target}: ${operation.tiles
-                    .map(tile => `(${tile.x},${tile.y})`).join(", ")} have multiplier `
-                    + `${operation.multiplier}.`;
-            case "set_parcel_value":
-                return `Parcel value policy set for ${target}: parcels ${operation.comparison} `
-                    + `${operation.value} have multiplier ${operation.multiplier}.`;
-            case "avoid_tile":
-                return `Avoided tile (${operation.x},${operation.y}) set for ${target}.`;
-            default:
-                return `Level 2 strategy cleared for ${target}.`;
-        }
+        return success(result.text);
     }
 
     /**
@@ -948,11 +851,10 @@ The bottom-left tile is (0,0). x grows to the right and y grows upwards.
 Partner information is the last state reported by the other agent. If partner
 information is missing, do not invent it.
 
-Level 2 policies stay active after the mission ends. Use one semantic policy
-tool for each requested strategy change. Use scope "me" for this agent only,
-scope "teammate" for the BDI partner only, and scope "both" only when the
-mission explicitly applies to both agents. A multiplier can be zero. Use
-clear_strategy only when the active Level 2 strategy must be removed.
+Level 2 strategies remain active after the mission ends. Use set_strategy once
+for each requested strategy change. The strategy is applied to this agent and
+to its configured teammate. A multiplier can be zero. Use {"type":"clear"}
+to remove the active Level 2 strategies.
 
 For a mission that asks both agents to meet near one position, call rendezvous
 once with the center and maximum Manhattan radius. The tool selects the two
