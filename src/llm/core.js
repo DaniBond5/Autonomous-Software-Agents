@@ -1,3 +1,5 @@
+import { trace } from "../utils/trace.js";
+
 const INTERNAL_ERROR_MESSAGE = "Mission stopped because of an internal error.";
 const BUSY_MESSAGE = "Busy: another mission is already running.";
 
@@ -32,6 +34,10 @@ export class LLMAgent {
         }
 
         if (this.busy) {
+            trace("mission", "rejected", {
+                reason: "busy",
+                sender: senderId
+            });
             try {
                 await this.executor.replyTo(senderId, BUSY_MESSAGE);
             } catch (error) {
@@ -46,6 +52,10 @@ export class LLMAgent {
         try {
             try {
                 const missionGoal = goal.trim();
+                trace("mission", "accepted", {
+                    sender: senderId,
+                    goal: missionGoal
+                });
                 console.log(`[llm] mission: ${missionGoal}`);
                 this.memory.startMission(missionGoal);
                 const result = await this.planner.runMission(
@@ -61,6 +71,10 @@ export class LLMAgent {
                 console.error("[llm] mission failed:", error);
             }
 
+            trace("mission", "completed", {
+                ok: cleanupReason === "mission finished",
+                answer: response
+            });
             try {
                 await this.executor.replyTo(senderId, response);
             } catch (error) {

@@ -6,6 +6,7 @@ import {
     isPositionTraversable,
     shortestPathsFrom
 } from "../utils/geometry.js";
+import { trace } from "../utils/trace.js";
 
 const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
@@ -356,20 +357,33 @@ export class LLMExecutor {
     /** @returns {Promise<ToolExecutionResult>} */
     async run(name, input) {
         const toolName = typeof name === "string" ? name.trim() : "";
+        const shownName = toolName || "(empty)";
+        trace("tool", "start", {
+            name: shownName,
+            input: input ?? ""
+        });
+
+        let result;
         if (!toolName || !Object.hasOwn(this.tools, toolName)) {
-            const shownName = toolName || "(empty)";
-            return failure(
+            result = failure(
                 `Unknown tool: ${shownName}. Available tools: ${Object.keys(this.tools).join(", ")}.`
             );
+        } else {
+            dbg(`${toolName}(${input ?? ""})`);
+            try {
+                result = await this.tools[toolName].run(input);
+            } catch (error) {
+                console.error(`[llm] ${toolName} tool failed unexpectedly:`, error);
+                result = failure("The tool failed because of an internal error.");
+            }
         }
 
-        dbg(`${toolName}(${input ?? ""})`);
-        try {
-            return await this.tools[toolName].run(input);
-        } catch (error) {
-            console.error(`[llm] ${toolName} tool failed unexpectedly:`, error);
-            return failure("The tool failed because of an internal error.");
-        }
+        trace("tool", "finish", {
+            name: shownName,
+            ok: result?.ok === true,
+            text: result?.text ?? ""
+        });
+        return result;
     }
 
     /**
@@ -565,6 +579,13 @@ export class LLMExecutor {
             y: partnerTarget.y,
             seconds: holdSeconds
         };
+        trace("rendezvous", "selected", {
+            id: rendezvousId,
+            center: tileKey(center),
+            radius: request.radius,
+            local: tileKey(myTarget),
+            partner: tileKey(partnerTarget)
+        });
 
         try {
             this.objectives.request("hold", localHold);
@@ -580,12 +601,18 @@ export class LLMExecutor {
             this.beliefs.partner.send("hold", {
                 hold: partnerHold
             });
-            return await this.waitForRendezvous(
+            const result = await this.waitForRendezvous(
                 center,
                 request.radius,
                 rendezvousId,
                 deadline
             );
+            trace("rendezvous", "completed", {
+                id: rendezvousId,
+                ok: result.ok,
+                text: result.text
+            });
+            return result;
         } finally {
             this.objectives.clear(rendezvousId, "rendezvous cleanup");
             try {
@@ -710,6 +737,15 @@ export class LLMExecutor {
         const receiverObjective = {
             ...sharedFields, id: receiverObjectiveId, role: "receiver"
         };
+        trace("handoff", "selected", {
+            id: sessionId,
+            parcel: configuration.parcel.id,
+            start: tileKey(configuration.parcelStart),
+            drop: tileKey(configuration.handoffTile),
+            wait: tileKey(configuration.waitTile),
+            exit: tileKey(configuration.exitTile),
+            delivery: tileKey(configuration.deliveryTile)
+        });
 
         let completion;
         try {
@@ -730,12 +766,19 @@ export class LLMExecutor {
             this.beliefs.partner.send("handoff", {
                 objective: receiverObjective
             });
-            return await this.waitForHandoff(
+            const result = await this.waitForHandoff(
                 completion,
                 receiverObjectiveId,
                 configuration.parcel.id,
                 deadline
             );
+            trace("handoff", "completed", {
+                id: sessionId,
+                parcel: configuration.parcel.id,
+                ok: result.ok,
+                text: result.text
+            });
+            return result;
         } finally {
             this.objectives.clear(giverObjectiveId, "parcel handoff cleanup");
             try {

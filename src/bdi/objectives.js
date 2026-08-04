@@ -1,3 +1,5 @@
+import { trace } from "../utils/trace.js";
+
 // Temporary mission objectives outrank normal autonomous desires.
 const LLM_OBJECTIVE_UTILITY = 10_000;
 
@@ -83,6 +85,19 @@ const handoffTarget = objective => {
         : objective.waitTile;
 };
 
+const objectiveTraceType = objective =>
+    objective.hold === true ? "hold" : objective.type;
+
+const traceHandoffPhase = (objective, from, to) => {
+    trace("objective", "phase", {
+        id: objective.id,
+        role: objective.role,
+        from,
+        to,
+        parcel: objective.parcelId
+    });
+};
+
 export class ObjectiveStore {
     constructor() {
         this.nextId = 1;
@@ -100,6 +115,14 @@ export class ObjectiveStore {
             resolveCompletion = resolve;
         });
         this.active = { objective, resolve: resolveCompletion };
+        trace("objective", "start", {
+            id: objective.id,
+            type: objectiveTraceType(objective),
+            role: objective.role,
+            parcel: objective.parcelId,
+            target: objective.target,
+            expiresAt: objective.expiresAt
+        });
         return { objective, completion };
     }
 
@@ -218,11 +241,28 @@ export class ObjectiveStore {
         const entry = this.active;
         this.active = null;
         entry.objective.status = status;
-        entry.resolve({
+        if (entry.objective.type === "handoff"
+            && status === "succeeded"
+            && (entry.objective.phase === "exit"
+                || entry.objective.phase === "deliver")) {
+            traceHandoffPhase(
+                entry.objective,
+                entry.objective.phase,
+                "succeeded"
+            );
+        }
+        const result = {
             objectiveId: entry.objective.id,
             status,
             reason: String(reason ?? ""),
+        };
+        trace("objective", "complete", {
+            id: entry.objective.id,
+            type: objectiveTraceType(entry.objective),
+            status,
+            reason: result.reason
         });
+        entry.resolve(result);
         return true;
     }
 
@@ -350,11 +390,15 @@ export class ObjectiveStore {
         }
 
         if (objective.role === "giver") {
-            objective.phase = objective.phase === "pickup" ? "drop" : "exit";
+            const previousPhase = objective.phase;
+            objective.phase = previousPhase === "pickup" ? "drop" : "exit";
+            traceHandoffPhase(objective, previousPhase, objective.phase);
             return true;
         }
         if (objective.phase === "wait") {
+            const previousPhase = objective.phase;
             objective.phase = "deliver";
+            traceHandoffPhase(objective, previousPhase, objective.phase);
             return true;
         }
 
