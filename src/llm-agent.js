@@ -81,11 +81,9 @@ export function startLlmAgent(socket) {
         if (!text) return;
         if (!isMissionSender(id, name)) return;
         console.log(`[llm] mission from ${name}: ${text}`);
-        try {
-            agent.enqueueMission(text, id);
-        } catch (error) {
+        void agent.handleMission(text, id).catch((error) => {
             console.error("[llm] mission refused:", error);
-        }
+        });
     });
 
     runAgentLoop(beliefs, planner, socket, {
