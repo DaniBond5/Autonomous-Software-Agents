@@ -1,5 +1,5 @@
 // Temporary mission objectives outrank normal autonomous desires.
-export const LLM_OBJECTIVE_UTILITY = 10_000;
+const LLM_OBJECTIVE_UTILITY = 10_000;
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const copyTarget = target => ({ x: target.x, y: target.y });

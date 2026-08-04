@@ -4,8 +4,6 @@ import { BFS, findCrateCorridor } from "../utils/geometry.js";
 import { CratePlanner } from "../pddl/crate-planner.js";
 import { POSITION_KEY } from "./beliefs.js";
 
-// Both agents plan with this same code in one process, so every line says which of the two
-// wrote it. The name comes from the token and is not known until the server sends it.
 const dbg = (beliefs, ...args) => {
     if (config.debug) console.log(`[${beliefs.me.name || "agent"}]`, ...args);
 };
@@ -32,12 +30,7 @@ const samePosition = (a, b) => Boolean(
 // lowering it makes it abandon goals after a single mishap.
 const MAX_CONSECUTIVE_BFS_MOVE_FAILURES = 2;
 
-/**
- * This function creates and returns the signature in string form
- * for the known crates in the map given an agent's beliefs.
- * @param {import("./beliefs.js").Beliefs} beliefs 
- * @returns {string} the crate signature.
- */
+/** @returns {string} stable signature for the currently known crate state */
 function crateSignature(beliefs) {
     return [...beliefs.crates.known.values()]
         .map(crate => `${encodeURIComponent(crate.id)}:${crate.x},${crate.y}`)
@@ -45,12 +38,7 @@ function crateSignature(beliefs) {
         .join(";");
 }
 
-/**
- * This function returns the direction of a step given a starting point and a destination point.
- * @param {import("./desires.js").Point} from 
- * @param {import("./desires.js").Point} to 
- * @returns {string} a string defining the direction of a step.
- */
+/** @returns {'up'|'down'|'left'|'right'|null} */
 function stepDir(from, to) {
     if (to.x > from.x) return "right";
     if (to.x < from.x) return "left";
@@ -60,13 +48,11 @@ function stepDir(from, to) {
 }
 
 /**
- * This function returns the result for a given path, given the terminal action,
- * the current intention and the agent's beliefs.
- * @param {false | Point []} path 
- * @param {{action: string} | null} terminal 
- * @param {import("./desires.js").Desire} intention 
- * @param {import("./beliefs.js").Beliefs} beliefs 
- * @returns {{status: string, action: string | {action: string, dir: string, source: string, intentionKey: string} | null}} the result for the given path.
+ * @param {false | import("./desires.js").Point[]} path
+ * @param {{action: string} | null} terminal
+ * @param {import("./desires.js").Desire} intention
+ * @param {import("./beliefs.js").Beliefs} beliefs
+ * @returns {PlanningResult}
  */
 function resultForPath(path, terminal, intention, beliefs) {
     const me = roundPos(beliefs.me.pos);
@@ -104,10 +90,7 @@ function resultForPath(path, terminal, intention, beliefs) {
     };
 }
 
-// Plan library, keyed by intention type. 
-// The planner is passed in so the table itself holds no agent state.
-// Walking to a tile and doing nothing on arrival serves two goals that differ only in where
-// the tile came from: an unchecked spawner, or a mission that named one. They share the plan.
+// The plan library holds no agent state; navigation-only goals share one handler.
 const navigateOnly = (planner, intention, beliefs) =>
     planner.navigateThen(null, intention, beliefs);
 
@@ -133,6 +116,7 @@ const planHandoff = (planner, intention, beliefs) => {
                     reason: "the giver no longer carries the selected parcel"
                 };
             }
+            // Handoff putdown transfers only the selected parcel.
             return navigateHandoff(
                 planner, intention, beliefs,
                 { action: "putdown", parcelId: intention.parcelId }
@@ -187,12 +171,7 @@ const planners = {
     handoff: planHandoff,
 };
 
-/**
- * This class represents the Plan step of the BDI cycle: turns an intention into the next action.
- * It holds the plan being executed and the memory of which goals cannot be
- * planned right now, so one instance belongs to one agent and two agents in
- * the same process cannot overwrite each other.
- */
+/** Turns one agent's intention into its next action. */
 export class Planner {
     constructor() {
         /** @type {{intentionKey:string,blockedSince:number} | null} */
@@ -219,13 +198,7 @@ export class Planner {
         this.cratePlanner = new CratePlanner();
     }
 
-    /**
-     * This function checks and returns whether if the given intention is a Crate Task, specifically
-     * designed for edge cases in particular maps where there's "corridors" created by crates, that need
-     * to be traversed by the agent.
-     * @param {import("./desires.js").Desire} intention 
-     * @returns {boolean} true if the active (current) given intention is a Crate Task, false otherwise.
-     */
+    /** @returns {boolean} */
     isCrateTaskActiveFor(intention) {
         return Boolean(
             intention?.type
@@ -235,15 +208,8 @@ export class Planner {
         );
     }
 
-    /** Filters structural no-plans and temporary technical deferrals. */
-    /**
-     * This function filters the given plannable desires, given the agent's beliefs.
-     * In particular, it filters out outdated desires, suppressed desires
-     *  or deferred desires whose deferral time has passed.
-     * @param {import("./desires.js").Desire[]} desires 
-     * @param {import("./beliefs.js").Beliefs} beliefs 
-     * @returns {import("./desires.js").Desire[]} A filtered array of desires.
-     */
+    // Remove stale suppression entries before filtering the current desires.
+    /** @returns {import("./desires.js").Desire[]} */
     filterPlannableDesires(desires, beliefs) {
         const currentKeys = new Set(desires.map(desireKey));
         for (const memory of [this.suppressedIntentions, this.deferredIntentions]) {
@@ -269,22 +235,14 @@ export class Planner {
         });
     }
 
-    /**
-     * This function suppresses an intention with the given key.
-     * @param {import("./beliefs.js").Beliefs} beliefs 
-     * @param {string} key 
-     */
+    /** @param {string} key */
     suppressIntention(beliefs, key) {
         this.deferredIntentions.delete(key);
         this.suppressedIntentions.set(key, crateSignature(beliefs));
         console.warn("[pddl] target suppressed until crate state changes");
     }
 
-    /**
-     * This function defers the intention with the given key for the given amount of milliseconds.
-     * @param {string} key 
-     * @param {number} durationMs 
-     */
+    /** @param {number} durationMs */
     deferIntention(key, durationMs) {
         this.deferredIntentions.set(key, Date.now() + durationMs);
     }
@@ -297,17 +255,13 @@ export class Planner {
         this.activeBfsMoveFailure = null;
     }
 
-    /**
-     * @param {string} reason 
-     */
+    /** @param {string} reason */
     discardCrateTask(reason) {
         this.activeCrateTask = null;
         this.cratePlanner.invalidateCratePlan(reason);
     }
 
-    /**
-     * @param {string} reason 
-     */
+    /** @param {string} reason */
     resetPlanningState(reason) {
         this.activeDetour = null;
         this.resetAgentBlock();
@@ -316,13 +270,12 @@ export class Planner {
     }
 
     /**
-     * This function applies the operations needed to block the agent when needed
-     * and returns an object with information about the block.
-     * @param {import("./beliefs.js").Beliefs} beliefs 
-     * @param {string} key 
-     * @returns {{status: string, reason: string}} an object containing the status of the current plan and the reason for the block.
+     * @param {import("./beliefs.js").Beliefs} beliefs
+     * @param {string} key
+     * @returns {PlanningResult}
      */
     handleAgentBlock(beliefs, key) {
+        // Wait briefly, then defer the goal so another intention can proceed.
         const now = Date.now();
         if (this.activeAgentBlock?.intentionKey !== key) {
             this.activeAgentBlock = {
@@ -347,12 +300,10 @@ export class Planner {
     }
 
     /**
-     * This function finds an ordinary path through BFS given the agent's beliefs and it's Point target
-     * and it returns an object with the path's information.
-     * @param {import("./beliefs.js").Beliefs} beliefs 
-     * @param {import("./desires.js").Point} target 
-     * @param {string} routeKey 
-     * @returns {{exists: boolean, path: false | import("./desires.js").Point[], blockedByAgent: true | null}} an object containing the found path's information.
+     * @param {import("./beliefs.js").Beliefs} beliefs
+     * @param {import("./desires.js").Point} target
+     * @param {string} routeKey
+     * @returns {{exists:boolean,path:false|import("./desires.js").Point[],blockedByAgent?:true}}
      */
     findOrdinaryPath(beliefs, target, routeKey) {
         const currentPosition = roundPos(beliefs.me.pos);
@@ -441,10 +392,9 @@ export class Planner {
     }
 
     /**
-     * This function handles the creation of a Crate Task, used in maps with crates that create corridors.
-     * @param {import("./beliefs.js").Beliefs} beliefs 
-     * @param {import("./desires.js").Desire} intention 
-     * @param {string} key 
+     * @param {import("./beliefs.js").Beliefs} beliefs
+     * @param {import("./desires.js").Desire} intention
+     * @param {string} key
      */
     createCrateTask(beliefs, intention, key) {
         this.resetAgentBlock();
@@ -467,11 +417,11 @@ export class Planner {
         );
     }
 
+    // A crate task is committed until its intention or approach crate state changes.
     /**
-     * This function is used to recheck the current Crate Task.
-     * @param {import("./beliefs.js").Beliefs} beliefs 
-     * @param {import("./desires.js").Desire} intention 
-     * @param {string} key 
+     * @param {import("./beliefs.js").Beliefs} beliefs
+     * @param {import("./desires.js").Desire} intention
+     * @param {string} key
      */
     ensureCrateTask(beliefs, intention, key) {
         const taskChanged = this.activeCrateTask
@@ -487,12 +437,7 @@ export class Planner {
         if (!this.activeCrateTask) this.createCrateTask(beliefs, intention, key);
     }
 
-    /**
-     * This function plans the Crate Task and its phases.
-     * It returns an object containing information about the result of the Crate Task.
-     * @param {import("./beliefs.js").Beliefs} beliefs 
-     * @returns {{status: string, reason string}} an object with the information about the outcome of the Crate Task.
-     */
+    /** @returns {Promise<PlanningResult>} */
     async planCratePhase(beliefs) {
         const task = this.activeCrateTask;
         const mode = task.phase;
@@ -532,6 +477,7 @@ export class Planner {
             return { status: "wait", reason: "unexpected crate planner result" };
         }
         if (task.phase === "local") {
+            // Global PDDL is the fallback when the shorter corridor plan has no solution.
             task.phase = "global";
             console.log("[pddl] local plan unavailable: using global planning");
             return { status: "wait", reason: "switching to global fallback" };
@@ -542,15 +488,7 @@ export class Planner {
         return { status: "unreachable", reason: "global PDDL returned no plan" };
     }
 
-    /**
-     * This function handles the navigation of the agent.
-     * It handles cases where the navigation can be done directly, cases
-     * where there's crates in the way and other cases.
-     * @param {{action: string | null}} terminal 
-     * @param {*} intention 
-     * @param {*} beliefs 
-     * @returns {{status: string, action: string | {action: string, dir: string, source: string, intentionKey: string} | null} | {status: string, reason: "string"}}
-     */
+    /** @returns {Promise<PlanningResult>} */
     async navigateThen(terminal, intention, beliefs) {
         const key = desireKey(intention);
         if (this.activeAgentBlock
@@ -611,7 +549,6 @@ export class Planner {
     }
 
     /**
-     * This function plans the next action.
      * @param {import("./desires.js").Desire | null} intention
      * @param {import("./beliefs.js").Beliefs} beliefs
      * @returns {Promise<PlanningResult>}
@@ -638,6 +575,7 @@ export class Planner {
         };
     }
 
+    /** @returns {PlanningResult | null} */
     reconcileBfsMoveOutcome(outcome, beliefs) {
         const action = outcome?.action;
         const isBfsMove = action?.action === "move"
@@ -680,6 +618,7 @@ export class Planner {
         };
     }
 
+    /** @returns {object} */
     reconcilePlanningOutcome(outcome, beliefs) {
         const crateResult = this.cratePlanner.reconcileCratePlanOutcome(outcome);
         if (crateResult.status === "invalidated") {

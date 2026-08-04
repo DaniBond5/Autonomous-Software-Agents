@@ -2,11 +2,7 @@ import OpenAI from "openai";
 
 import config from "../config.js";
 
-/**
- * Thin wrapper around the OpenAI-compatible endpoint.
- * It exists so the rest of the agent never touches the vendor SDK: swapping
- * the university gateway for a local model is a change to this file only.
- */
+/** Keeps the vendor SDK behind one OpenAI-compatible client. */
 export class LLMClient {
     /**
      * @param {{baseUrl: string, apiKey: string, model: string, temperature: number}} [settings]
@@ -21,10 +17,8 @@ export class LLMClient {
     }
 
     /**
-     * Sends a conversation and returns the raw text of the reply.
-     * Errors are left to the caller: only the planner knows how many failures
-     * are worth retrying before the turn is dropped.
-     * @param {{role: string, content: string}[]} messages
+     * Returns raw model text and leaves retry decisions to the planner.
+     * @param {{role:string,content:string}[]} messages
      * @returns {Promise<string>}
      */
     async complete(messages) {

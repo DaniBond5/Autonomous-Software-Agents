@@ -1,7 +1,5 @@
 import config from "../config.js";
 
-// Both agents run this same code in one process, so every line says which of the two wrote
-// it. The name comes from the token and is not known until the server sends it.
 const dbg = (beliefs, ...args) => {
     if (config.debug) console.log(`[${beliefs.me.name || "agent"}]`, ...args);
 };
@@ -14,25 +12,14 @@ const dbg = (beliefs, ...args) => {
  * @property {*} [error] error raised by the SDK call
  */
 
-/**
- * @param {import("./planning.js").Action} action
- * @param {*} error 
- * @param {import("./beliefs.js").Beliefs} beliefs
- * @returns {ActionOutcome}
- */
 function sdkFailure(action, error, beliefs) {
     const message = error instanceof Error ? error.message : String(error);
     dbg(beliefs, `${action.action} failed: ${message}`);
     return { status: 'failed', action, result: null, error };
 }
 
-/**
- * The BDI loop awaits each call, so the socket receives one action at a time.
- * @param {import("./planning.js").Action} action
- * @param {import("./beliefs.js").Beliefs} beliefs
- * @param {object} socket
- * @returns {Promise<ActionOutcome>}
- */
+// The BDI loop awaits every call, so this is the only physical actuator.
+/** @returns {Promise<ActionOutcome>} */
 export async function executeAction(action, beliefs, socket) {
     switch (action.action) {
         case 'move': {

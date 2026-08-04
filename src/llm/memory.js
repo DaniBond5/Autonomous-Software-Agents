@@ -4,8 +4,7 @@ const MAX_RECENT_EVENTS = 8;
 
 const point = ({ x, y }) => `(${x},${y})`;
 
-/** @param {import("../bdi/beliefs.js").Beliefs} beliefs */
-export function describeState(beliefs) {
+function describeState(beliefs) {
     const parcels = beliefs.parcels
         .availableKnown(beliefs.world.localDecayIntervalMs)
         .sort((first, second) => second.reward - first.reward)

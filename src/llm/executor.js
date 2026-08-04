@@ -212,14 +212,8 @@ function selectRendezvousTargets(beliefs, center, radius) {
     return null;
 }
 
-/**
- * Evaluates an arithmetic expression without eval, which would run whatever
- * the sender wrote inside our process. Anything outside plain arithmetic is
- * rejected before parsing, and the parser itself only knows numbers.
- * @param {string} expression
- * @returns {number | null} the value, or null when the input is not arithmetic
- */
-export function evaluateExpression(expression) {
+// Parse only arithmetic tokens; never execute arbitrary calculator input.
+function evaluateExpression(expression) {
     if (typeof expression !== "string" || !ARITHMETIC.test(expression)) return null;
 
     const tokens = expression.match(/\d+|[+\-*/()]/g) ?? [];
@@ -264,12 +258,7 @@ export function evaluateExpression(expression) {
     }
 }
 
-/**
- * Reads a tile out of what the model wrote, accepting the shapes it tends to
- * produce for a pair of coordinates.
- * @param {string} input
- * @returns {{x: number, y: number} | null}
- */
+/** @returns {{x:number,y:number} | null} */
 function parseTile(input) {
     const numbers = String(input ?? "").match(/-?\d+/g);
     if (!numbers || numbers.length < 2) return null;
@@ -345,17 +334,12 @@ export class LLMExecutor {
         };
     }
 
-    /** @param {string} reason */
+    /** @returns {boolean} */
     cancelPendingObjective(reason) {
         return this.objectives.cancelActive(reason);
     }
 
-    /**
-     * Sends the final mission result to its immutable sender.
-     * @param {string} senderId
-     * @param {string} message
-     * @returns {Promise<string>}
-     */
+    /** @returns {Promise<string>} */
     async replyTo(senderId, message) {
         if (typeof senderId !== "string" || !senderId.trim()) {
             throw new TypeError("mission sender must be a non-empty string");
@@ -368,13 +352,8 @@ export class LLMExecutor {
         return `message sent (${status})`;
     }
 
-    /**
-     * Runs one known tool. Unexpected errors are logged here, while the model
-     * receives only a safe result.
-     * @param {string} name
-     * @param {string} input
-     * @returns {Promise<ToolExecutionResult>}
-     */
+    // Unexpected tool errors are logged here but hidden from the model.
+    /** @returns {Promise<ToolExecutionResult>} */
     async run(name, input) {
         const toolName = typeof name === "string" ? name.trim() : "";
         if (!toolName || !Object.hasOwn(this.tools, toolName)) {
@@ -393,6 +372,10 @@ export class LLMExecutor {
         }
     }
 
+    /**
+     * @param {string} input
+     * @returns {Promise<ToolExecutionResult>}
+     */
     async goTo(input) {
         const target = parseTile(input);
         if (!target) {
@@ -410,6 +393,7 @@ export class LLMExecutor {
         return failure(`Cannot reach (${target.x},${target.y}): ${reason}`);
     }
 
+    /** @returns {Promise<ToolExecutionResult>} */
     async pickUp() {
         const { completion } = this.objectives.request("pickup");
         const result = await completion;
@@ -422,6 +406,7 @@ export class LLMExecutor {
         );
     }
 
+    /** @returns {Promise<ToolExecutionResult>} */
     async putDown() {
         const { completion } = this.objectives.request("putdown");
         const result = await completion;
@@ -430,6 +415,10 @@ export class LLMExecutor {
         return failure(`Putdown failed: ${reason}`);
     }
 
+    /**
+     * @param {string} input
+     * @returns {ToolExecutionResult}
+     */
     applyStrategy(input) {
         let raw;
         try {
@@ -451,6 +440,13 @@ export class LLMExecutor {
         return success(result.text);
     }
 
+    /**
+     * @param {{x:number,y:number}} center
+     * @param {number} radius
+     * @param {string} rendezvousId
+     * @param {number} deadline
+     * @returns {Promise<ToolExecutionResult>}
+     */
     async waitForRendezvous(center, radius, rendezvousId, deadline) {
         while (Date.now() < deadline) {
             if (!this.beliefs.partner.isKnown) {
@@ -490,6 +486,10 @@ export class LLMExecutor {
         );
     }
 
+    /**
+     * @param {string} input
+     * @returns {Promise<ToolExecutionResult>}
+     */
     async rendezvous(input) {
         let request;
         try {
@@ -598,6 +598,13 @@ export class LLMExecutor {
         }
     }
 
+    /**
+     * @param {Promise<object>} giverCompletion
+     * @param {string} receiverObjectiveId
+     * @param {string} parcelId
+     * @param {number} deadline
+     * @returns {Promise<ToolExecutionResult>}
+     */
     async waitForHandoff(giverCompletion, receiverObjectiveId, parcelId, deadline) {
         let giverResult = null;
 
@@ -642,6 +649,10 @@ export class LLMExecutor {
         );
     }
 
+    /**
+     * @param {string} input
+     * @returns {Promise<ToolExecutionResult>}
+     */
     async handoffParcel(input) {
         let request = null;
         try {
@@ -738,17 +749,8 @@ export class LLMExecutor {
     }
 }
 
-// The prompt lives next to the registry above because it is written from it.
-// Apart, the two drift in silence: the model would be told about a tool that is
-// gone, or never hear about one that is there.
-
-/**
- * Builds the system prompt from the tool registry.
- * The registry is the only description of the tools, so adding one there is
- * enough for the model to learn about it: nothing has to be edited twice.
- * @param {LLMExecutor} executor
- * @returns {string}
- */
+// Build the prompt from the registry so their tool descriptions stay aligned.
+/** @param {LLMExecutor} executor */
 export function buildSystemPrompt(executor) {
     const tools = Object.entries(executor.tools)
         .map(([name, tool]) => `- ${name}: ${tool.description}`)

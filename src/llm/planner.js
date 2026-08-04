@@ -7,6 +7,7 @@ const dbg = (...args) => {
 };
 
 const MAX_STEPS = 10;
+// Bound the LLM execution loop even when the model never reaches a final answer.
 
 // The endpoint is shared with the rest of the course, so a failure is often
 // temporary. After this many in a row the mission stops instead of insisting.
@@ -31,15 +32,9 @@ const FINAL_ANSWER = /^[ \t]*Final Answer[ \t]*:[ \t]*([\s\S]*)$/m;
  * @typedef {{action: string, input: string} | {action: null, answer: string}} Step
  */
 
-/**
- * Reads the next step out of a reply.
- * An action wins over a final answer when both are present: the model cannot
- * know how the tool went before running it, so an answer written next to a
- * call it never made is a guess.
- * @param {string} text
- * @returns {Step | null} null when the reply follows neither shape
- */
-export function parseStep(text) {
+// An action wins over a final answer because the tool result is not known yet.
+/** @returns {Step | null} */
+function parseStep(text) {
     const action = ACTION.exec(text ?? "");
     if (action) {
         return {
@@ -55,18 +50,10 @@ export function parseStep(text) {
 }
 
 export class LLMPlanner {
-    /**
-     * @param {import("./client.js").LLMClient} client
-     */
     constructor(client) {
         this.client = client;
     }
 
-    /**
-     * Calls the model, retrying a few times when the endpoint is down.
-     * @param {{role: string, content: string}[]} messages
-     * @returns {Promise<string | null>} null when the endpoint kept failing
-     */
     async ask(messages) {
         for (let failures = 0; failures < MAX_API_FAILURES; failures += 1) {
             try {
@@ -79,12 +66,6 @@ export class LLMPlanner {
         return null;
     }
 
-    /**
-     * @param {import("./memory.js").LLMMemory} memory
-     * @param {import("./executor.js").LLMExecutor} executor
-     * @param {import("./replanner.js").LLMReplanner} replanner
-     * @returns {Promise<{answer: string, completed: boolean}>}
-     */
     async runMission(memory, executor, replanner) {
         for (let stepNumber = 0; stepNumber < MAX_STEPS; stepNumber += 1) {
             const messages = [

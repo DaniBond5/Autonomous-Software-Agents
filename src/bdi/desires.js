@@ -5,25 +5,17 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  */
 
 /**
- * A desire is a candidate goal the agent could pursue. Navigation variants
- * expose a target, while action objectives operate on the current tile.
- *
  * @typedef {Object} Desire
  * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'|'go_to_tile'|'pick_up_here'|'put_down_here'|'handoff'} type
- * @property {Point} [target]  - where to move, when the desire navigates
- * @property {number} utility  - score from the utility functions
- * @property {number} [distance] - current BFS distance from the agent to the target
- * @property {string} [id]     - parcel id, ONLY for go_pick_up (used for intention revision)
- * @property {string} [objectiveId] - explicit objective identity, only for external goals
+ * @property {Point} [target]
+ * @property {number} utility
+ * @property {number} [distance]
+ * @property {string} [id]
+ * @property {string} [objectiveId]
  * @property {'pickup'|'drop'|'exit'|'wait'|'deliver'} [phase]
  */
 
-/**
- * Builds the identity of a desire. Desire objects are rebuilt from scratch on
- * every cycle, so a goal can only be recognised across cycles through this key.
- * @param {Desire} desire
- * @returns {string} the desire identity
- */
+// Desires are rebuilt each cycle, so their keys preserve goal identity.
 export function desireKey(desire) {
     if (desire.objectiveId) {
         const x = desire.target?.x ?? "";
@@ -33,16 +25,8 @@ export function desireKey(desire) {
     return `${desire.type}:${desire.id ?? ''}:${desire.target.x},${desire.target.y}`;
 }
 
-/**
- * Keeps delivery tiles that are operational or explicitly allowed by a policy.
- * If none are safe, every reachable candidate remains available as a fallback.
- * @param {import("./beliefs.js").Beliefs} beliefs
- * @param {object[]} candidates
- * @returns {object[]} safe candidates when possible, or all candidates as a fallback.
- */
+// Prefer operational or explicitly allowed deliveries, with all reachable ones as fallback.
 export function preferOperationalDeliveryCandidates(beliefs, candidates) {
-    // A policy can explicitly allow one delivery tile.
-    // Other unsafe delivery tiles remain excluded.
     const safe = candidates.filter(candidate =>
         candidate.delivery.canReachOperationalSpawner === true
         || beliefs.rules.includesDeliveryTile(candidate.delivery)
@@ -51,11 +35,10 @@ export function preferOperationalDeliveryCandidates(beliefs, candidates) {
 }
 
 /**
- * This function computes the total reward that carried parcels are expected to retain
- * if the agent were to move to a delivery tile with the given distance.
+ * Estimates the carried reward after the moves needed to reach a delivery.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
- * @returns {number} the expected carried reward at a delivery tile with the given distance from it.
+ * @returns {number}
  */
 function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
     const decayPerMove = beliefs.world.decayPerMove();
@@ -73,10 +56,10 @@ function expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery) {
 }
 
 /**
- * Computes the reward a batch on one tile would retain at a delivery.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} batch
  * @param {number} totalDistance
+ * @returns {number}
  */
 function expectedBatchRewardAtDelivery(beliefs, batch, totalDistance) {
     const decayPerMove = beliefs.world.decayPerMove();
@@ -89,7 +72,6 @@ function expectedBatchRewardAtDelivery(beliefs, batch, totalDistance) {
 }
 
 /**
- * Chooses the future delivery that gives one pickup batch its best expected utility.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {import("../utils/geometry.js").ShortestPaths | null} parcelPaths
  * @param {number} distanceToParcel
@@ -135,13 +117,11 @@ function bestDeliveryAfterPickup(beliefs, parcelPaths, distanceToParcel, batch) 
 }
 
 /**
- * This function computes the utility of delivering the carried parcels.
- * The utility is computed by using the distance to the nearest delivery tile.
- * @todo add formula in comments
+ * Scores a delivery by expected ruled reward per movement.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {number} distanceToDelivery
- * @param {Point} deliveryTile the tile being scored, since a policy can single one out
- * @returns {number} the path-efficiency utility for delivering.
+ * @param {Point} deliveryTile
+ * @returns {number}
  */
 function deliverUtility(beliefs, distanceToDelivery, deliveryTile) {
     const expectedDeliveredReward = expectedCarriedRewardAtDelivery(beliefs, distanceToDelivery);
@@ -153,24 +133,16 @@ function deliverUtility(beliefs, distanceToDelivery, deliveryTile) {
     return expectedRuledReward / Math.max(1, distanceToDelivery);
 }
 
-/**
- * This function computes the utlity for the action of exploring, typically used when there's no other option.
- * This utility is computed with the amount of moves since the last time a spawner was checked and the distance to reach it.
- * Spawners not observed recently gain priority over time, while BFS distance penalizes costly trips.
- * @param {number} movesSinceCheck
- * @param {number} pathDistance
- * @returns {number} the exploration utility
- */
+/** @returns {number} priority from staleness divided by path distance */
 function spawnerExplorationUtility(movesSinceCheck, pathDistance) {
     return movesSinceCheck / Math.max(1, pathDistance);
 }
 
 /**
- * This function generates the current set of desires as plain objects, given the beliefs.
- * Desires are ephemeral data, regenerated every cycle.
+ * Regenerates autonomous desires and prepends the active external objective.
  * @param {import("./beliefs.js").Beliefs} beliefs
  * @param {import("./objectives.js").ObjectiveStore | null} [objectives=null]
- * @returns {Desire[]} the generated desires.
+ * @returns {Desire[]}
  */
 export function generateDesires(beliefs, objectives = null) {
     const desires = [];
@@ -197,9 +169,7 @@ export function generateDesires(beliefs, objectives = null) {
         const distanceToParcel = distanceFromSearch(agentPaths, parcel);
         if (!Number.isFinite(distanceToParcel)) continue;
 
-        // Leave a claimed parcel to the partner when the partner is closer to it. Yielding is symmetric:
-        // both agents weigh the same two distances, so exactly one of them drops the parcel from its
-        // desires and the other one keeps it. The check sits here because it needs the distance above.
+        // Both agents use the same distance comparison, so exactly one yields a claimed parcel.
         if (beliefs.partner.outbidsMeOn(parcel.id, distanceToParcel, beliefs.me.id)) continue;
 
         const parcelPaths = shortestPathsFrom(beliefs, parcel);
@@ -252,11 +222,7 @@ export function generateDesires(beliefs, objectives = null) {
     }
 
     const hasPickupDesire = desires.some(desire => desire.type === 'go_pick_up');
-    // Explore when there is nothing better to do. The carried check normally
-    // keeps the agent from wandering off with parcels in hand, but it is lifted
-    // when the set would otherwise be empty: with no desire at all the intention
-    // stays null and the agent stops for good, and moving is the only thing that
-    // changes which tiles are reachable on a one-way map.
+    // Explore as a fallback; on one-way maps moving can expose new reachable goals.
     if (!hasPickupDesire
         && (beliefs.parcels.carried.size === 0 || desires.length === 0)) {
         const now = Date.now();

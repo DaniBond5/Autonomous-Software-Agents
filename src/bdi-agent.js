@@ -4,14 +4,12 @@ import { Planner } from "./bdi/planning.js";
 import { runAgentLoop } from "./bdi/loop.js";
 
 /**
- * Builds the BDI agent on a socket and starts its cycle.
- * The loop never returns, so it is started rather than awaited: the caller gets the beliefs
- * back, which is where a partner is wired once there is one.
+ * Starts one BDI loop without awaiting the non-terminating cycle.
  * @param {object} socket
- * @returns {import("./bdi/beliefs.js").Beliefs} this agent's beliefs
+ * @returns {import("./bdi/beliefs.js").Beliefs}
  */
 export function startBdiAgent(socket) {
-    // Beliefs and planning state belong to one agent.
+    // Each socket owns its beliefs, planner and objectives; its loop runs in the background.
     const beliefs = new Beliefs();
     const planner = new Planner();
     const objectives = new ObjectiveStore();
