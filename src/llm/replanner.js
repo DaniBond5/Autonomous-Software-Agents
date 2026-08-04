@@ -1,32 +1,18 @@
-/**
- * Consumes one semantic failure and asks the model for another approach.
- */
 export class LLMReplanner {
     /**
-     * Returns one concrete reason, then removes it from memory.
      * @param {import("./memory.js").LLMMemory} memory
-     * @returns {string | null} why to replan, or null when nothing changed
+     * @param {string} action
+     * @param {string} input
+     * @param {string} reason
      */
-    shouldReplan(memory) {
-        return memory.takeReplanReason();
-    }
+    replan(memory, action, input, reason) {
+        const tool = input ? `${action} ${input}` : action;
+        const sentence = /[.!?]$/.test(reason) ? reason : `${reason}.`;
 
-    /**
-     * Records why the plan is being rebuilt, then runs the next turn on the
-     * state as it is now.
-     * @param {import("./memory.js").LLMMemory} memory
-     * @param {import("./planner.js").LLMPlanner} planner
-     * @param {import("./executor.js").LLMExecutor} executor
-     * @param {string} reason what changed, from shouldReplan
-     * @returns {Promise<import("./planner.js").TurnOutcome>} how the turn ended, so the
-     *          caller counts a replanned turn the same as any other.
-     */
-    async replan(memory, planner, executor, reason) {
         console.log(`[llm] replanning: ${reason}`);
         memory.remember(
-            `The previous step could not be completed: ${reason}. `
+            `Previous action ${tool} failed: ${sentence} `
             + "Choose a different valid approach."
         );
-        return planner.runTurn(memory, executor);
     }
 }

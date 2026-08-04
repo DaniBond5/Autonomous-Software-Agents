@@ -1,8 +1,4 @@
 import config from "../config.js";
-import {
-    applyStrategyOperation,
-    normalizeStrategyOperation
-} from "../bdi/rules.js";
 import { preferOperationalDeliveryCandidates } from "../bdi/desires.js";
 import {
     distanceFromSearch,
@@ -15,49 +11,16 @@ const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
 };
 
-/**
- * @typedef {Object} ToolExecutionResult
- * @property {boolean} ok
- * @property {string} observation
- * @property {string | null} replanReason
- */
+/** @typedef {{ok: boolean, text: string}} ToolExecutionResult */
 
-/** @param {string} observation @returns {ToolExecutionResult} */
-function success(observation) {
-    if (typeof observation !== "string") {
-        throw new TypeError("a successful tool result needs a string observation");
-    }
-    const text = observation.trim();
-    if (!text) throw new TypeError("a successful tool result needs an observation");
-    return { ok: true, observation: text, replanReason: null };
-}
+const success = text => ({ ok: true, text });
+const failure = text => ({ ok: false, text });
 
-/**
- * @param {string} observation
- * @param {string} replanReason
- * @returns {ToolExecutionResult}
- */
-function failure(observation, replanReason) {
-    if (typeof observation !== "string" || typeof replanReason !== "string") {
-        throw new TypeError("a failed tool result needs string fields");
-    }
-    const text = observation.trim();
-    const reason = replanReason.trim();
-    if (!text || !reason) {
-        throw new TypeError("a failed tool result needs an observation and a replan reason");
-    }
-    return { ok: false, observation: text, replanReason: reason };
-}
+const COORDINATION_POLL_MS = 100;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
-const STRATEGY_SCOPES = new Set(["me", "teammate", "both"]);
-const RENDEZVOUS_REPLAN_REASON = "the rendezvous could not be started or completed";
-const HANDOFF_REPLAN_REASON = "the parcel handoff could not be started or completed";
-const rendezvousFailure = observation =>
-    failure(observation, RENDEZVOUS_REPLAN_REASON);
-const handoffFailure = observation =>
-    failure(observation, HANDOFF_REPLAN_REASON);
 
 const isObject = value => value !== null
     && typeof value === "object"
@@ -74,10 +37,6 @@ const compareTiles = (first, second) =>
     first.x - second.x || first.y - second.y;
 const compareStrings = (first, second) =>
     first < second ? -1 : first > second ? 1 : 0;
-const compareHandoffCandidates = (first, second) =>
-    first.cost - second.cost
-    || compareStrings(first.parcel.id, second.parcel.id)
-    || compareTiles(first.handoffTile, second.handoffTile);
 const CARDINAL_STEPS = [
     { x: 1, y: 0 },
     { x: -1, y: 0 },
@@ -108,15 +67,13 @@ const adjacentTiles = (beliefs, center) => CARDINAL_STEPS
     .map(copyPoint);
 
 function selectHandoffConfiguration(beliefs) {
-    const isBlockedByCrate = position => beliefs.crates.isOccupied(position);
-    const pathOptions = { isBlocked: isBlockedByCrate };
+    const pathOptions = { isBlocked: position => beliefs.crates.isOccupied(position) };
     const giverPaths = shortestPathsFrom(beliefs, beliefs.me.pos, pathOptions);
     const receiverPaths = shortestPathsFrom(
-        beliefs,
-        beliefs.partner.state,
-        pathOptions
+        beliefs, beliefs.partner.state, pathOptions
     );
     const freeParcels = freeKnownParcels(beliefs);
+    const occupiedByFreeParcel = new Set(freeParcels.map(tileKey));
     const parcels = freeParcels
         .map(parcel => ({
             parcel,
@@ -131,14 +88,12 @@ function selectHandoffConfiguration(beliefs) {
             first.giverPickupDistance - second.giverPickupDistance
             || compareStrings(first.parcel.id, second.parcel.id)
         );
-    const occupiedByFreeParcel = new Set(freeParcels.map(tileKey));
-    const configurations = [];
 
     for (const { parcel, giverPickupDistance } of parcels) {
-        let parcelConfiguration = null;
-        const handoffTiles = adjacentTiles(beliefs, parcel)
+        const parcelStart = copyPoint(parcel);
+        const handoffTiles = adjacentTiles(beliefs, parcelStart)
             .filter(tile => isPositionTraversable(beliefs, tile)
-                && isMoveAllowed(beliefs, parcel, tile)
+                && isMoveAllowed(beliefs, parcelStart, tile)
                 && !beliefs.world.deliveries.has(tileKey(tile))
                 && !beliefs.world.spawners.has(tileKey(tile))
                 && !beliefs.world.isCrateSpace(tile)
@@ -154,13 +109,13 @@ function selectHandoffConfiguration(beliefs) {
                     && !beliefs.rules.isAvoided(tile))
                 .sort(compareTiles);
             const wait = neighbors
-                .filter(tile => !samePosition(tile, parcel)
-                    && isMoveAllowed(beliefs, tile, handoffTile)
-                    && Number.isFinite(distanceFromSearch(receiverPaths, tile)))
                 .map(tile => ({
                     tile,
                     distance: distanceFromSearch(receiverPaths, tile),
                 }))
+                .filter(candidate => !samePosition(candidate.tile, parcelStart)
+                    && Number.isFinite(candidate.distance)
+                    && isMoveAllowed(beliefs, candidate.tile, handoffTile))
                 .sort((first, second) =>
                     first.distance - second.distance
                     || compareTiles(first.tile, second.tile)
@@ -194,108 +149,71 @@ function selectHandoffConfiguration(beliefs) {
             )[0];
             if (!selectedDelivery) continue;
 
-            const giverHandoffDistance = 1;
-            const cost = giverPickupDistance
-                + giverHandoffDistance
-                + wait.distance
-                + selectedDelivery.distance;
-            const candidate = {
+            return {
                 parcel: { id: parcel.id, x: parcel.x, y: parcel.y },
-                handoffTile,
-                waitTile: wait.tile,
-                exitTile,
+                parcelStart,
+                handoffTile: copyPoint(handoffTile),
+                waitTile: copyPoint(wait.tile),
+                exitTile: copyPoint(exitTile),
                 deliveryTile: copyPoint(selectedDelivery.delivery),
-                cost,
+                estimatedMoves: giverPickupDistance
+                    + 1
+                    + wait.distance
+                    + selectedDelivery.distance
+                    + 4,
             };
-            if (!parcelConfiguration
-                || compareHandoffCandidates(candidate, parcelConfiguration) < 0) {
-                parcelConfiguration = candidate;
-            }
-        }
-
-        if (parcelConfiguration) configurations.push(parcelConfiguration);
-    }
-
-    configurations.sort(compareHandoffCandidates);
-    return configurations[0] ?? null;
-}
-
-function compareRendezvousAssignments(first, second) {
-    const firstRank = [
-        Math.max(first.myDistance, first.partnerDistance),
-        first.myDistance + first.partnerDistance,
-        first.myTarget.x,
-        first.myTarget.y,
-        first.partnerTarget.x,
-        first.partnerTarget.y
-    ];
-    const secondRank = [
-        Math.max(second.myDistance, second.partnerDistance),
-        second.myDistance + second.partnerDistance,
-        second.myTarget.x,
-        second.myTarget.y,
-        second.partnerTarget.x,
-        second.partnerTarget.y
-    ];
-    for (let index = 0; index < firstRank.length; index += 1) {
-        if (firstRank[index] !== secondRank[index]) {
-            return firstRank[index] - secondRank[index];
         }
     }
-    return 0;
+
+    return null;
 }
 
 function selectRendezvousTargets(beliefs, center, radius) {
-    const region = [...beliefs.world.tiles.values()]
+    const candidates = [...beliefs.world.tiles.values()]
         .filter(tile => isIntegerPosition(tile)
-            && manhattanDistance(tile, center) <= radius)
-        .map(tile => ({ x: tile.x, y: tile.y }));
-    const candidates = region.filter(tile =>
-        isPositionTraversable(beliefs, tile)
-        && !beliefs.rules.isAvoided(tile)
-    );
-    const isBlockedByCrate = position => beliefs.crates.isOccupied(position);
+            && manhattanDistance(tile, center) <= radius
+            && isPositionTraversable(beliefs, tile)
+            && !beliefs.rules.isAvoided(tile))
+        .map(copyPoint);
+    const isBlocked = position => beliefs.crates.isOccupied(position);
     const myPaths = shortestPathsFrom(beliefs, beliefs.me.pos, {
-        isBlocked: isBlockedByCrate
+        isBlocked
     });
     const partnerPaths = shortestPathsFrom(beliefs, beliefs.partner.state, {
-        isBlocked: isBlockedByCrate
+        isBlocked
     });
+    const reachableFrom = search => candidates
+        .map(tile => ({
+            tile,
+            distance: distanceFromSearch(search, tile)
+        }))
+        .filter(candidate => Number.isFinite(candidate.distance))
+        .sort((first, second) =>
+            first.distance - second.distance
+            || compareTiles(first.tile, second.tile)
+        );
+    const myCandidates = reachableFrom(myPaths);
+    const partnerCandidates = reachableFrom(partnerPaths);
 
-    let best = null;
-    for (const myTarget of candidates) {
-        const myDistance = distanceFromSearch(myPaths, myTarget);
-        if (!Number.isFinite(myDistance)) continue;
-
-        for (const partnerTarget of candidates) {
-            if (myTarget.x === partnerTarget.x
-                && myTarget.y === partnerTarget.y) continue;
-            const partnerDistance = distanceFromSearch(partnerPaths, partnerTarget);
-            if (!Number.isFinite(partnerDistance)) continue;
-
-            const assignment = {
-                myTarget,
-                partnerTarget,
-                myDistance,
-                partnerDistance
+    for (const mine of myCandidates) {
+        const theirs = partnerCandidates.find(candidate =>
+            !samePosition(candidate.tile, mine.tile)
+        );
+        if (theirs) {
+            return {
+                myTarget: mine.tile,
+                partnerTarget: theirs.tile,
+                myDistance: mine.distance,
+                partnerDistance: theirs.distance
             };
-            if (!best || compareRendezvousAssignments(assignment, best) < 0) {
-                best = assignment;
-            }
         }
     }
 
-    return { regionIntersectsMap: region.length > 0, assignment: best };
+    return null;
 }
 
-/**
- * Evaluates an arithmetic expression without eval, which would run whatever
- * the sender wrote inside our process. Anything outside plain arithmetic is
- * rejected before parsing, and the parser itself only knows numbers.
- * @param {string} expression
- * @returns {number | null} the value, or null when the input is not arithmetic
- */
-export function evaluateExpression(expression) {
+// Parse only arithmetic tokens; never execute arbitrary calculator input.
+function evaluateExpression(expression) {
     if (typeof expression !== "string" || !ARITHMETIC.test(expression)) return null;
 
     const tokens = expression.match(/\d+|[+\-*/()]/g) ?? [];
@@ -340,41 +258,14 @@ export function evaluateExpression(expression) {
     }
 }
 
-/**
- * Reads a tile out of what the model wrote, accepting the shapes it tends to
- * produce for a pair of coordinates.
- * @param {string} input
- * @returns {{x: number, y: number} | null}
- */
+/** @returns {{x:number,y:number} | null} */
 function parseTile(input) {
     const numbers = String(input ?? "").match(/-?\d+/g);
     if (!numbers || numbers.length < 2) return null;
     return { x: Number(numbers[0]), y: Number(numbers[1]) };
 }
 
-/**
- * Reads a tile and a duration for the local hold tool.
- * @param {string} input
- * @returns {{x: number, y: number, seconds: number} | null}
- */
-function parseHold(input) {
-    const numbers = String(input ?? "").match(/-?\d+/g);
-    if (!numbers || numbers.length < 3) return null;
-    const hold = {
-        x: Number(numbers[0]),
-        y: Number(numbers[1]),
-        seconds: Number(numbers[2])
-    };
-    return hold.seconds > 0 ? hold : null;
-}
-
-/**
- * The tools the model can call, and the only place they are described.
- * The system prompt is generated from this registry, so a new tool becomes
- * available to the model as soon as it is added here.
- * Every tool returns a structured result. The model sees the observation,
- * while a semantic failure also gives the planner one clear replan reason.
- */
+// Tool descriptions also feed the system prompt below.
 export class LLMExecutor {
     /**
      * @param {{beliefs: import("../bdi/beliefs.js").Beliefs,
@@ -412,47 +303,21 @@ export class LLMExecutor {
                     const value = evaluateExpression(expression);
                     return value === null
                         ? failure(
-                            `Cannot compute "${expression}": only numbers, + - * / and parentheses are allowed.`,
-                            "the calculation input was invalid"
+                            `Cannot compute "${expression}": only numbers, + - * / and parentheses are allowed.`
                         )
                         : success(`${expression} = ${value}`);
                 },
             },
-            set_stack_policy: {
-                description: "Deliver only exact stacks of parcels. Input is JSON with "
-                    + 'count, multiplier, and optional scope, for example '
-                    + '{"count":3,"multiplier":2,"scope":"me"}.',
-                run: input => this.runStrategyTool(input, "set_stack"),
-            },
-            set_delivery_policy: {
-                description: "Set one multiplier for one or more known delivery tiles. "
-                    + "Input is JSON with tiles, multiplier, and optional scope, for example "
-                    + '{"tiles":[{"x":4,"y":7}],"multiplier":5,"scope":"both"}.',
-                run: input => this.runStrategyTool(input, "set_delivery"),
-            },
-            set_parcel_value_policy: {
-                description: "Set a multiplier for parcels above, below, at_least, or at_most "
-                    + "one value. Input is JSON with comparison, value, multiplier, and "
-                    + 'optional scope, for example {"comparison":"above","value":10,'
-                    + '"multiplier":0,"scope":"me"}.',
-                run: input => this.runStrategyTool(input, "set_parcel_value"),
-            },
-            avoid_tile: {
-                description: "Never walk through one known map tile. Input is JSON with x, y, "
-                    + 'and optional scope, for example {"x":3,"y":6,"scope":"both"}.',
-                run: input => this.runStrategyTool(input, "avoid_tile"),
-            },
-            clear_strategy: {
-                description: "Remove the selected agents' active Level 2 policies without "
-                    + "removing a temporary hold. Input is JSON with optional scope, for "
-                    + 'example {"scope":"both"}.',
-                run: input => this.runStrategyTool(input, "clear"),
-            },
-            hold_at: {
-                description: "Go to a tile and wait there, then go back to playing. Input is "
-                    + 'the tile and the seconds to wait, for example "4,7 30". Use it for a '
-                    + "mission that asks you to be somewhere at a time.",
-                run: input => this.hold(input),
+            set_strategy: {
+                description: "Set one Level 2 strategy that remains active after the mission "
+                    + "for this agent and its configured teammate. Input is one JSON object "
+                    + "in one of these forms: "
+                    + '{"type":"set_stack","count":3,"multiplier":2}; '
+                    + '{"type":"set_delivery","tiles":[{"x":4,"y":7}],"multiplier":5}; '
+                    + '{"type":"set_parcel_value","comparison":"above","value":10,'
+                    + '"multiplier":0}; {"type":"avoid_tile","x":3,"y":6}; '
+                    + '{"type":"clear"}.',
+                run: input => this.applyStrategy(input),
             },
             rendezvous: {
                 description: "Move both agents near one position and wait for both to arrive. "
@@ -469,17 +334,12 @@ export class LLMExecutor {
         };
     }
 
-    /** @param {string} reason */
+    /** @returns {boolean} */
     cancelPendingObjective(reason) {
         return this.objectives.cancelActive(reason);
     }
 
-    /**
-     * Sends the final mission result to its immutable sender.
-     * @param {string} senderId
-     * @param {string} message
-     * @returns {Promise<string>}
-     */
+    /** @returns {Promise<string>} */
     async replyTo(senderId, message) {
         if (typeof senderId !== "string" || !senderId.trim()) {
             throw new TypeError("mission sender must be a non-empty string");
@@ -492,51 +352,27 @@ export class LLMExecutor {
         return `message sent (${status})`;
     }
 
-    /**
-     * Runs one known tool and checks that it returned a consistent result.
-     * Unexpected errors are logged here but only a safe observation reaches the model.
-     * @param {string} name
-     * @param {string} input
-     * @returns {Promise<ToolExecutionResult>}
-     */
+    // Unexpected tool errors are logged here but hidden from the model.
+    /** @returns {Promise<ToolExecutionResult>} */
     async run(name, input) {
         const toolName = typeof name === "string" ? name.trim() : "";
         if (!toolName || !Object.hasOwn(this.tools, toolName)) {
             const shownName = toolName || "(empty)";
             return failure(
-                `Unknown tool: ${shownName}. Available tools: ${Object.keys(this.tools).join(", ")}.`,
-                toolName
-                    ? `the selected tool "${toolName}" does not exist`
-                    : "the selected tool name was invalid"
+                `Unknown tool: ${shownName}. Available tools: ${Object.keys(this.tools).join(", ")}.`
             );
         }
 
-        const tool = this.tools[toolName];
         dbg(`${toolName}(${input ?? ""})`);
         try {
-            const result = await tool.run(input);
-            const validSuccess = result?.ok === true
-                && result.replanReason === null;
-            const validFailure = result?.ok === false
-                && typeof result.replanReason === "string"
-                && Boolean(result.replanReason.trim());
-            if ((!validSuccess && !validFailure)
-                || typeof result?.observation !== "string"
-                || !result.observation.trim()) {
-                throw new TypeError(`${toolName} returned an invalid tool result`);
-            }
-            return result;
+            return await this.tools[toolName].run(input);
         } catch (error) {
             console.error(`[llm] ${toolName} tool failed unexpectedly:`, error);
-            return failure(
-                "The tool failed because of an internal error.",
-                `the ${toolName} tool failed unexpectedly`
-            );
+            return failure("The tool failed because of an internal error.");
         }
     }
 
     /**
-     * Publishes a tile objective and waits for the BDI loop to report its result.
      * @param {string} input
      * @returns {Promise<ToolExecutionResult>}
      */
@@ -544,249 +380,90 @@ export class LLMExecutor {
         const target = parseTile(input);
         if (!target) {
             return failure(
-                `Cannot read "${input}" as a tile. Write it as x,y.`,
-                "the go_to input was not a valid tile"
+                `Cannot read "${input}" as a tile. Write it as x,y.`
             );
         }
 
-        const { completion } = this.objectives.requestGoTo(target);
+        const { completion } = this.objectives.request("go_to", { target });
         const result = await completion;
         if (result.status === "succeeded") {
             return success(`Reached (${target.x},${target.y}).`);
         }
-        if (result.status === "failed") {
-            const reason = String(result.reason || "no path was found").trim();
-            return failure(
-                `Cannot reach (${target.x},${target.y}): ${reason}`,
-                `the target tile (${target.x},${target.y}) could not be reached: ${reason}`
-            );
-        }
-        if (result.status === "cancelled") {
-            const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(
-                `Go-to (${target.x},${target.y}) was cancelled: ${reason}`,
-                `the go_to objective for (${target.x},${target.y}) was cancelled: ${reason}`
-            );
-        }
-        throw new TypeError("go_to received an unknown objective result");
+        const reason = String(result.reason || "the objective stopped").trim();
+        return failure(`Cannot reach (${target.x},${target.y}): ${reason}`);
     }
 
-    /**
-     * Requests one pickup and waits for the BDI loop to return the server result.
-     * @returns {Promise<ToolExecutionResult>}
-     */
+    /** @returns {Promise<ToolExecutionResult>} */
     async pickUp() {
-        const { completion } = this.objectives.requestPickup();
+        const { completion } = this.objectives.request("pickup");
         const result = await completion;
         if (result.status === "succeeded") return success(result.reason);
-        if (result.status === "failed") {
-            const reason = String(result.reason || "pickup failed").trim();
-            return failure(
-                `Pickup failed: ${reason}`,
-                reason === "no parcels were picked up"
-                    ? "there were no parcels available on the current tile"
-                    : `the pickup could not be completed: ${reason}`
-            );
-        }
-        if (result.status === "cancelled") {
-            const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(
-                `Pickup was cancelled: ${reason}`,
-                `the pickup objective was cancelled: ${reason}`
-            );
-        }
-        throw new TypeError("pick_up received an unknown objective result");
+        const reason = String(result.reason || "the objective stopped").trim();
+        return failure(
+            reason === "no parcels were picked up"
+                ? "Pickup failed: there are no parcels on the current tile."
+                : `Pickup failed: ${reason}`
+        );
+    }
+
+    /** @returns {Promise<ToolExecutionResult>} */
+    async putDown() {
+        const { completion } = this.objectives.request("putdown");
+        const result = await completion;
+        if (result.status === "succeeded") return success(result.reason);
+        const reason = String(result.reason || "the objective stopped").trim();
+        return failure(`Putdown failed: ${reason}`);
     }
 
     /**
-     * Requests one putdown and waits for the BDI loop to return the server result.
-     * @returns {Promise<ToolExecutionResult>}
+     * @param {string} input
+     * @returns {ToolExecutionResult}
      */
-    async putDown() {
-        const { completion } = this.objectives.requestPutdown();
-        const result = await completion;
-        if (result.status === "succeeded") return success(result.reason);
-        if (result.status === "failed") {
-            const reason = String(result.reason || "putdown failed").trim();
-            let replanReason = `the putdown could not be completed: ${reason}`;
-            if (reason === "not carrying any parcels") {
-                replanReason = "the agent is not carrying any parcels to put down";
-            } else if (reason === "no parcels were put down") {
-                replanReason = "no parcels were put down on the current tile";
-            }
-            return failure(`Putdown failed: ${reason}`, replanReason);
-        }
-        if (result.status === "cancelled") {
-            const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(
-                `Putdown was cancelled: ${reason}`,
-                `the putdown objective was cancelled: ${reason}`
-            );
-        }
-        throw new TypeError("put_down received an unknown objective result");
-    }
-
-    /** Parses one semantic tool input and sends it through the scoped strategy path. */
-    runStrategyTool(input, type) {
+    applyStrategy(input) {
         let raw;
         try {
             raw = JSON.parse(String(input ?? ""));
         } catch {
-            return failure(
-                "Cannot apply strategy: the input is not valid JSON.",
-                "the requested strategy could not be applied to the selected scope"
-            );
+            return failure("Cannot apply strategy: the input is not valid JSON.");
         }
-        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-            return failure(
-                "Cannot apply strategy: the input must be one JSON object.",
-                "the requested strategy could not be applied to the selected scope"
-            );
+        if (!isObject(raw)) {
+            return failure("Cannot apply strategy: the input must be one JSON object.");
         }
 
-        const { scope = "me", type: _ignoredType, ...fields } = raw;
-        return this.applyScopedStrategy({ type, ...fields }, scope);
+        const result = this.beliefs.rules.apply(raw);
+        if (!result.ok) return failure(`Cannot apply strategy: ${result.text}`);
+        if (this.beliefs.partner.isKnown) {
+            this.beliefs.partner.send("strategy", {
+                operation: result.operation
+            });
+        }
+        return success(result.text);
     }
 
     /**
-     * Scope controls where the same normalized operation is applied.
-     * Each receiver stores it locally and does not send it back.
-     */
-    applyScopedStrategy(rawOperation, scope) {
-        if (!STRATEGY_SCOPES.has(scope)) {
-            return failure(
-                'Cannot apply strategy: scope must be "me", "teammate", or "both".',
-                "the requested strategy could not be applied to the selected scope"
-            );
-        }
-
-        const normalized = normalizeStrategyOperation(rawOperation);
-        if (!normalized.ok) {
-            return failure(
-                `Cannot apply strategy: ${normalized.reason}.`,
-                "the requested strategy could not be applied to the selected scope"
-            );
-        }
-        const operation = normalized.operation;
-
-        if (operation.type === "set_delivery") {
-            const unknown = operation.tiles.find(tile =>
-                !this.beliefs.world.deliveries.has(`${tile.x},${tile.y}`)
-            );
-            if (unknown) {
-                return failure(
-                    `Cannot apply strategy: (${unknown.x},${unknown.y}) is not a known delivery tile.`,
-                    "the requested strategy could not be applied to the selected scope"
-                );
-            }
-        }
-        if (operation.type === "avoid_tile"
-            && !this.beliefs.world.tiles.has(`${operation.x},${operation.y}`)) {
-            return failure(
-                `Cannot apply strategy: (${operation.x},${operation.y}) is not a known map tile.`,
-                "the requested strategy could not be applied to the selected scope"
-            );
-        }
-
-        const includesTeammate = scope === "teammate" || scope === "both";
-        if (includesTeammate && !this.beliefs.partner.isKnown) {
-            return failure(
-                "Cannot apply the policy to the teammate: no partner is configured.",
-                "the requested strategy could not be applied to the selected scope"
-            );
-        }
-
-        if (scope === "me" || scope === "both") {
-            const applied = applyStrategyOperation(this.beliefs.rules, operation);
-            if (!applied.ok) {
-                return failure(
-                    `Cannot apply strategy: ${applied.reason}.`,
-                    "the requested strategy could not be applied to the selected scope"
-                );
-            }
-        }
-        if (includesTeammate) this.beliefs.partner.shareStrategy(operation);
-
-        return success(this.strategyObservation(operation, scope));
-    }
-
-    strategyObservation(operation, scope) {
-        const target = scope === "me"
-            ? "this agent"
-            : scope === "teammate"
-                ? "the teammate"
-                : "both agents";
-        switch (operation.type) {
-            case "set_stack":
-                return `Stack policy set for ${target}: deliver exactly ${operation.count} `
-                    + `parcels with multiplier ${operation.multiplier}.`;
-            case "set_delivery":
-                return `Delivery policy set for ${target}: ${operation.tiles
-                    .map(tile => `(${tile.x},${tile.y})`).join(", ")} have multiplier `
-                    + `${operation.multiplier}.`;
-            case "set_parcel_value":
-                return `Parcel value policy set for ${target}: parcels ${operation.comparison} `
-                    + `${operation.value} have multiplier ${operation.multiplier}.`;
-            case "avoid_tile":
-                return `Avoided tile (${operation.x},${operation.y}) set for ${target}.`;
-            default:
-                return `Level 2 strategy cleared for ${target}.`;
-        }
-    }
-
-    /**
-     * Sends this agent to a tile for a while.
-     * @param {string} input tile and seconds
+     * @param {{x:number,y:number}} center
+     * @param {number} radius
+     * @param {string} rendezvousId
+     * @param {number} deadline
      * @returns {Promise<ToolExecutionResult>}
      */
-    async hold(input) {
-        const hold = parseHold(input);
-        if (!hold) {
-            return failure(
-                `Cannot read "${input}". Write it as x,y seconds.`,
-                "the hold_at input was invalid"
-            );
-        }
-
-        const result = this.beliefs.rules.setHold({
-            id: `hold ${hold.x},${hold.y}`,
-            ...hold
-        });
-        return result.ok
-            ? success(result.summary)
-            : failure(
-                `Cannot hold there: ${result.reason}`,
-                `the hold request was invalid: ${result.reason}`
-            );
-    }
-
     async waitForRendezvous(center, radius, rendezvousId, deadline) {
-        let revision = this.beliefs.sensingRevision;
-
         while (Date.now() < deadline) {
             if (!this.beliefs.partner.isKnown) {
-                return rendezvousFailure(
-                    "Rendezvous failed because the partner is no longer available."
-                );
+                return failure("Rendezvous failed because the partner is no longer available.");
             }
 
             const myPosition = this.beliefs.me.pos;
             const partnerPosition = this.beliefs.partner.state;
             if (!isIntegerPosition(myPosition)) {
-                return rendezvousFailure(
-                    "Rendezvous failed because the local position is unavailable."
-                );
+                return failure("Rendezvous failed because the local position is unavailable.");
             }
             if (!isIntegerPosition(partnerPosition)) {
-                return rendezvousFailure(
-                    "Rendezvous failed because the partner position is unavailable."
-                );
+                return failure("Rendezvous failed because the partner position is unavailable.");
             }
 
-            if (this.beliefs.rules.activeHold()?.id !== rendezvousId) {
-                return rendezvousFailure(
-                    "Rendezvous stopped because its local hold was replaced."
-                );
+            if (!this.objectives.isActive(rendezvousId)) {
+                return failure("Rendezvous stopped because its local hold was replaced.");
             }
 
             const bothInside = manhattanDistance(myPosition, center) <= radius
@@ -799,58 +476,56 @@ export class LLMExecutor {
             }
 
             const remainingMs = deadline - Date.now();
-            if (remainingMs <= 0) break;
-            await this.beliefs.waitForSensingAfter(revision, remainingMs);
-            revision = this.beliefs.sensingRevision;
+            if (remainingMs > 0) {
+                await sleep(Math.min(COORDINATION_POLL_MS, remainingMs));
+            }
         }
 
-        return rendezvousFailure(
+        return failure(
             "Rendezvous failed: both agents did not reach the requested area before the deadline."
         );
     }
 
-    /** Selects two targets, installs their holds, and waits for both BDI agents. */
+    /**
+     * @param {string} input
+     * @returns {Promise<ToolExecutionResult>}
+     */
     async rendezvous(input) {
         let request;
         try {
             request = JSON.parse(String(input ?? ""));
         } catch {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the input is not valid JSON."
             );
         }
         if (!isObject(request)) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the input must be one JSON object."
             );
         }
         if (!Number.isInteger(request.x) || !Number.isInteger(request.y)
             || !Number.isInteger(request.radius) || request.radius < 0) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: x and y must be integers and radius must be a non-negative integer."
             );
         }
 
         const world = this.beliefs.world;
-        if (world.tiles.size === 0 || world.width <= 0 || world.height <= 0) {
-            return rendezvousFailure(
-                "Cannot start rendezvous: the map is not available yet."
-            );
-        }
         if (!this.beliefs.partner.isKnown) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: no partner is configured."
             );
         }
         if (!isIntegerPosition(this.beliefs.me.pos)
             || !isPositionTraversable(this.beliefs, this.beliefs.me.pos)) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the local position is unavailable."
             );
         }
         if (!isIntegerPosition(this.beliefs.partner.state)
             || !isPositionTraversable(this.beliefs, this.beliefs.partner.state)) {
-            return rendezvousFailure(
+            return failure(
                 "Cannot start rendezvous: the partner position is unavailable."
             );
         }
@@ -861,25 +536,18 @@ export class LLMExecutor {
             center,
             request.radius
         );
-        if (!selection.regionIntersectsMap) {
-            return rendezvousFailure(
-                "Cannot start rendezvous: the requested area does not intersect the known map."
-            );
-        }
-        if (!selection.assignment) {
-            return rendezvousFailure(
-                "Cannot start rendezvous: there are not two distinct reachable tiles inside the requested area."
+        if (!selection) {
+            return failure(
+                "Cannot start rendezvous: no two distinct reachable tiles exist inside the requested area."
             );
         }
 
-        // The runtime selects two different reachable tiles.
-        // Both BDI loops remain responsible for movement.
         const { myTarget, partnerTarget, myDistance, partnerDistance } =
-            selection.assignment;
-        const longestDistance = Math.max(myDistance, partnerDistance);
-        const movementDuration = world.movementDurationMs();
-        const timeoutMoves = longestDistance + world.width + world.height;
-        const timeoutMs = timeoutMoves * movementDuration;
+            selection;
+        const timeoutMoves = Math.max(myDistance, partnerDistance)
+            + world.width
+            + world.height;
+        const timeoutMs = timeoutMoves * world.movementDurationMs();
         const holdSeconds = Math.ceil(timeoutMs / 1000) + 1;
         const startedAt = Date.now();
         const ownerId = String(this.beliefs.me.id || "agent").trim() || "agent";
@@ -898,89 +566,100 @@ export class LLMExecutor {
             seconds: holdSeconds
         };
 
-        const registered = this.beliefs.rules.setHold(localHold);
-        if (!registered.ok) {
-            return rendezvousFailure(
-                `Cannot start rendezvous: ${registered.reason}.`
+        try {
+            this.objectives.request("hold", localHold);
+        } catch (error) {
+            return failure(
+                `Cannot start rendezvous: ${error instanceof Error
+                    ? error.message
+                    : "invalid local hold"}.`
             );
         }
 
         try {
-            this.beliefs.partner.shareHold(partnerHold);
+            this.beliefs.partner.send("hold", {
+                hold: partnerHold
+            });
             return await this.waitForRendezvous(
                 center,
                 request.radius,
                 rendezvousId,
                 deadline
             );
-        } catch (error) {
-            console.error("[llm] rendezvous coordination failed:", error);
-            return rendezvousFailure(
-                "Rendezvous failed because coordination could not be completed."
-            );
         } finally {
-            // Clear only the hold created by this rendezvous.
-            // A newer hold must not be removed.
-            this.beliefs.rules.clearHold(rendezvousId);
+            this.objectives.clear(rendezvousId, "rendezvous cleanup");
             try {
-                this.beliefs.partner.shareHoldClear(rendezvousId);
+                this.beliefs.partner.send("hold_clear", {
+                    id: rendezvousId
+                });
             } catch (error) {
-                console.warn("[llm] rendezvous cleanup message failed:", error);
+                dbg("rendezvous cleanup message failed", error);
             }
         }
     }
 
-    async waitForHandoff(configuration, giverCompletion, deadline) {
+    /**
+     * @param {Promise<object>} giverCompletion
+     * @param {string} receiverObjectiveId
+     * @param {string} parcelId
+     * @param {number} deadline
+     * @returns {Promise<ToolExecutionResult>}
+     */
+    async waitForHandoff(giverCompletion, receiverObjectiveId, parcelId, deadline) {
         let giverResult = null;
-        let receiverPicked = false;
-        const parcelId = configuration.parcel.id;
-        let revision = this.beliefs.sensingRevision;
 
         void giverCompletion.then(result => {
             giverResult = result;
-            this.beliefs.advanceSensingRevision();
         });
 
         while (Date.now() < deadline) {
-            const partnerState = this.beliefs.partner.state;
-            const partnerCarries = Array.isArray(partnerState?.carriedParcelIds)
-                && partnerState.carriedParcelIds.includes(parcelId);
-            if (partnerCarries) receiverPicked = true;
-
             if (giverResult?.status === "failed"
                 || giverResult?.status === "cancelled") {
-                return handoffFailure(
+                return failure(
                     `Parcel handoff failed: ${giverResult.reason || "the giver objective stopped"}.`
                 );
             }
-            if (giverResult?.status === "succeeded"
-                && receiverPicked
-                && !partnerCarries
-                && samePosition(partnerState, configuration.deliveryTile)) {
-                return success(
-                    `Parcel handoff completed: the teammate delivered parcel ${parcelId} `
-                    + "after receiving it from this agent."
-                );
+
+            const receiverResult = this.beliefs.partner.handoffResult;
+            if (receiverResult?.id === receiverObjectiveId) {
+                if (receiverResult.status === "succeeded"
+                    && giverResult?.status === "succeeded") {
+                    return success(
+                        `Parcel handoff completed: the teammate delivered parcel ${parcelId} `
+                        + "after receiving it from this agent."
+                    );
+                }
+                if (receiverResult.status === "failed"
+                    || receiverResult.status === "cancelled") {
+                    return failure(
+                        `Parcel handoff failed: ${receiverResult.reason
+                            || "the receiver objective stopped"}.`
+                    );
+                }
             }
 
             const remainingMs = deadline - Date.now();
-            if (remainingMs <= 0) break;
-            await this.beliefs.waitForSensingAfter(revision, remainingMs);
-            revision = this.beliefs.sensingRevision;
+            if (remainingMs > 0) {
+                await sleep(Math.min(COORDINATION_POLL_MS, remainingMs));
+            }
         }
 
-        return handoffFailure(
+        return failure(
             "Parcel handoff failed: the delivery was not completed before the deadline."
         );
     }
 
+    /**
+     * @param {string} input
+     * @returns {Promise<ToolExecutionResult>}
+     */
     async handoffParcel(input) {
         let request = null;
         try {
             request = JSON.parse(String(input ?? ""));
         } catch {}
         if (!isObject(request) || Object.keys(request).length !== 0) {
-            return handoffFailure(
+            return failure(
                 "Cannot start parcel handoff: the input must be {}."
             );
         }
@@ -991,21 +670,22 @@ export class LLMExecutor {
             || !this.beliefs.partner.id?.trim()
             || !isIntegerPosition(this.beliefs.me.pos)
             || !isIntegerPosition(this.beliefs.partner.state)
-            || !Array.isArray(this.beliefs.partner.state?.carriedParcelIds)) {
-            return handoffFailure(
+            || world.tiles.size === 0) {
+            return failure(
                 "Cannot start parcel handoff: the live map or agent state is unavailable."
             );
         }
 
         const configuration = selectHandoffConfiguration(this.beliefs);
         if (!configuration) {
-            return handoffFailure(
+            return failure(
                 "Parcel handoff failed: no safe exchange configuration is reachable by both agents."
             );
         }
 
-        const estimatedMoves = configuration.cost + 4;
-        const timeoutMoves = estimatedMoves + world.width + world.height;
+        const timeoutMoves = configuration.estimatedMoves
+            + world.width
+            + world.height;
         const timeoutMs = timeoutMoves * world.movementDurationMs();
         const startedAt = Date.now();
         const deadline = startedAt + timeoutMs;
@@ -1017,7 +697,7 @@ export class LLMExecutor {
             parcelId: configuration.parcel.id,
             giverId: this.beliefs.me.id,
             receiverId: this.beliefs.partner.id,
-            parcelStart: copyPoint(configuration.parcel),
+            parcelStart: configuration.parcelStart,
             handoffTile: configuration.handoffTile,
             waitTile: configuration.waitTile,
             exitTile: configuration.exitTile,
@@ -1031,44 +711,46 @@ export class LLMExecutor {
             ...sharedFields, id: receiverObjectiveId, role: "receiver"
         };
 
+        let completion;
+        try {
+            ({ completion } = this.objectives.request(
+                "handoff",
+                giverObjective
+            ));
+        } catch (error) {
+            return failure(
+                `Cannot start parcel handoff: ${error instanceof Error
+                    ? error.message
+                    : "invalid local objective"}.`
+            );
+        }
+
         try {
             // The LLM only requests the action. Both BDI loops execute it.
-            const { completion } = this.objectives.requestHandoff(
-                giverObjective
-            );
-            this.beliefs.partner.shareHandoff(receiverObjective);
+            this.beliefs.partner.send("handoff", {
+                objective: receiverObjective
+            });
             return await this.waitForHandoff(
-                configuration,
                 completion,
+                receiverObjectiveId,
+                configuration.parcel.id,
                 deadline
-            );
-        } catch (error) {
-            console.error("[llm] parcel handoff coordination failed:", error);
-            return handoffFailure(
-                "Parcel handoff failed because coordination could not be completed."
             );
         } finally {
             this.objectives.clear(giverObjectiveId, "parcel handoff cleanup");
             try {
-                this.beliefs.partner.shareHandoffClear(receiverObjectiveId);
+                this.beliefs.partner.send("handoff_clear", {
+                    id: receiverObjectiveId
+                });
             } catch (error) {
-                console.warn("[llm] parcel handoff cleanup message failed:", error);
+                dbg("parcel handoff cleanup message failed", error);
             }
         }
     }
 }
 
-// The prompt lives next to the registry above because it is written from it.
-// Apart, the two drift in silence: the model would be told about a tool that is
-// gone, or never hear about one that is there.
-
-/**
- * Builds the system prompt from the tool registry.
- * The registry is the only description of the tools, so adding one there is
- * enough for the model to learn about it: nothing has to be edited twice.
- * @param {LLMExecutor} executor
- * @returns {string}
- */
+// Build the prompt from the registry so their tool descriptions stay aligned.
+/** @param {LLMExecutor} executor */
 export function buildSystemPrompt(executor) {
     const tools = Object.entries(executor.tools)
         .map(([name, tool]) => `- ${name}: ${tool.description}`)
@@ -1084,15 +766,14 @@ The bottom-left tile is (0,0). x grows to the right and y grows upwards.
 Partner information is the last state reported by the other agent. If partner
 information is missing, do not invent it.
 
-Level 2 policies stay active after the mission ends. Use one semantic policy
-tool for each requested strategy change. Use scope "me" for this agent only,
-scope "teammate" for the BDI partner only, and scope "both" only when the
-mission explicitly applies to both agents. A multiplier can be zero. Use
-clear_strategy only when the active Level 2 strategy must be removed.
+Level 2 strategies remain active after the mission ends. Use set_strategy once
+for each requested strategy change. The strategy is applied to this agent and
+to its configured teammate. A multiplier can be zero. Use {"type":"clear"}
+to remove the active Level 2 strategies.
 
 For a mission that asks both agents to meet near one position, call rendezvous
 once with the center and maximum Manhattan radius. The tool selects the two
-target tiles and waits for both agents. Do not combine rendezvous with hold_at.
+target tiles and waits for both agents.
 
 For a mission where one agent must pick up a parcel and the teammate must
 deliver the same parcel, call handoff_parcel once with {}. The tool selects the

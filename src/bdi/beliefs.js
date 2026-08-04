@@ -2,30 +2,15 @@ import {
     distanceFromSearch,
     shortestPathsFrom
 } from "../utils/geometry.js";
-import { normalizeHandoffObjective } from "./objectives.js";
-import { RuleStore, applyStrategyOperation } from "./rules.js";
+import { RuleStore } from "./rules.js";
 
-/**
- * This constant is used to convert position coordinates into a standard key to be used for all data structures that involve positions and need one.
- * @param {{x, y}} position 
- * @returns {string} a string representing a key to be used for data structures involving positions.
- */
 export const POSITION_KEY = ({ x, y }) => `${x},${y}`;
 
-/**
- * This constant acts as a function that checks and returns if a given position is finite.
- * @param {{x: number, y: number}} position 
- * @returns {boolean} true if the position is finite, false otherwise.
-*/
 const isFinitePosition = position =>
     Number.isFinite(position?.x)
     && Number.isFinite(position?.y);
 
-/**
- * This function returns a number representing the parcel reward decay interval in milliseconds given a string stating the interval.
- * @param {string} event 
- * @returns {number} the parcel decay interval in milliseconds
-*/
+/** @returns {number} decay interval in milliseconds, or zero for no decay */
 function parseLocalDecayIntervalMs(event) {
     switch (event) {
         case '1s': return 1000;
@@ -39,12 +24,7 @@ function parseLocalDecayIntervalMs(event) {
     }
 }
 
-/**
- * This function updates every spawner and delivery point contained in their respective maps.
- * Specifically, it updates the boolean canReachOperationalx (x/spawner/delivery).
- * This function is particularly useful for maps where there are delivery tiles or spawner tiles that lead to deadlocks once reached.
- * @param {Beliefs} beliefs an agent's beliefs
-*/
+// Mark spawners and deliveries that do not trap the agent away from future work.
 function updateOperationalReachability(beliefs) {
     const spawners = Array.from(beliefs.world.spawners.values());
     const deliveries = Array.from(beliefs.world.deliveries.values());
@@ -88,40 +68,18 @@ function updateOperationalReachability(beliefs) {
     }
 }
 
-/**
- * This class represents the agent's own data: identity, position and score.
- * It also allows to update them through different functions.
-*/
 class Me {
     constructor() {
-        /**
-         * @type {string}
-         */
         this.id = "";
 
-        /**
-         * @type {string}
-         */
         this.name = "";
 
-        /**
-         * @type {{x: number, y: number}}
-         */
         this.pos = { x: -1, y: -1 };
 
-        /**
-         * @type {number}
-         */
         this.score = 0;
     }
 
-    /**
-     * This function updates the agent's data.
-     * The first time this function is called, id and name are initialised.
-     * The following calls update position and score.
-     * Position is updated ONLY when both x and y are integers, gating fractional steps.
-     * @param {{id: string, name: string, x: number, y: number}} agentData 
-    */
+    /** @param {{id:string,name:string,x:number,y:number,score:number}} agentData */
     update({ id, name, x, y, score }) {
         if (this.id == "" || this.name == "") {
             this.id = id;
@@ -134,54 +92,33 @@ class Me {
         this.score = score;
     }
 
-    /**
-     * This function updates the agent's position and is to be used after a succesful move.
-     * In particular, this function is used right after emitMove resolves succesfully.
-     * Doing this allows the re-planning in the next cycle to start from the actual agent's position instead of relying on a stale onYou belief.
-     * @param {{x: number, y: number}} position 
-    */
+    /** @param {{x:number,y:number}} position */
     applyMovement({ x, y }) {
         this.pos.x = Math.round(x);
         this.pos.y = Math.round(y);
     }
 }
 
-/**
- * This class represents the agent's beliefs regarding parcels.
- * In particular, this class contains a Map for visible, known and carried parcels.
- * The class also provides functions to update these maps given the respective sensing.
-*/
 class Parcels {
     constructor() {
-        /**
-         * This map contains all the parcels seen during the latest sensing.
-         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel> }
-        */
+        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel>} */
         this.visible = new Map();
 
         /**
-         * This map contains all "known" parcels, along a @type {Date} variable stating when they've been observed.
-         * A known parcel is a parcel that has been observed in the past during previous sensings.
-         * This map holds these parcels until their last known position is observed and they're not present.
-         * Before that happens, this map can contain outdated information by design.
-         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel & {observedAt: Date}> }
-        */
+         * Past observations remain until their tile is seen empty or their reward decays away.
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel & {observedAt: number}>}
+         */
         this.known = new Map();
 
-        /**
-         * This map contains the parcels currently carried by the agent.
-         * @type { Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel> }
-        */
+        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel>} */
         this.carried = new Map();
     }
 
     /**
-     * This function updates parcel beliefs given the current sensing.
-     * A known parcel is forgotten when its last known position is observed without it.
      * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} perceivedParcels
      * @param {string} meId
-     * @param {function({x: number, y: number}): boolean} isVisible
-    */
+     * @param {function({x:number,y:number}):boolean} isVisible
+     */
     update(perceivedParcels, meId, isVisible) {
         this.visible.clear();
         const seenNow = new Set();
@@ -222,13 +159,12 @@ class Parcels {
     }
 
     /**
-     * This function reconciles parcel beliefs after a successful pickup or putdown outcome.
-     * In particular it updates the agent's parcel beliefs given the succesful result of either action.
-     * @param {{status: string, action: {action: string} | null, result: *}} outcome
+     * Reconciles the real server result before the next sensing update arrives.
+     * @param {import("./execution.js").ActionOutcome} outcome
      * @param {string} meId
-     * @param {{x: number, y: number}} mePos
+     * @param {{x:number,y:number}} mePos
      * @param {boolean} [isDelivery=false]
-    */
+     */
     reconcileActionOutcome(outcome, meId, mePos, isDelivery = false) {
         const actionType = outcome?.action?.action;
         if (outcome?.status !== 'succeeded'
@@ -297,16 +233,7 @@ class Parcels {
         }
     }
 
-    /**
-     * This function adds parcels reported by the partner to the known map.
-     * It is what lets an agent know about parcels lying outside its own sensing range.
-     * An existing entry is never overwritten: the two agents share no clock, so there is no way to tell
-     * whether a report is fresher than what we saw ourselves, and a first-hand observation is the better bet.
-     * A wrong report costs nothing and repairs itself through the machinery that is already here:
-     * `availableKnown` re-estimates the reward from `observedAt` and forgets the parcel once it decays to zero,
-     * and `update` forgets it as soon as the reported position is observed without it.
-     * @param {{id: string, x: number, y: number, reward: number}[]} reported
-    */
+    /** @param {{id:string,x:number,y:number,reward:number}[]} reported */
     mergeReported(reported) {
         const observedAt = Date.now();
 
@@ -319,6 +246,7 @@ class Parcels {
                 continue;
             }
 
+            // First-hand beliefs win because the two agents do not share a clock.
             if (this.known.has(parcel.id)
                 || this.visible.has(parcel.id)
                 || this.carried.has(parcel.id)) {
@@ -335,12 +263,7 @@ class Parcels {
         }
     }
 
-    /**
-     * This function returns known parcels with their reward estimated using the current time and the parcel decay interval.
-     * Parcels whose estimated reward is not positive are forgotten.
-     * @param {number} localDecayIntervalMs local decay interval in milliseconds
-     * @returns {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} the available known parcels with their estimated reward.
-    */
+    /** @returns {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} */
     availableKnown(localDecayIntervalMs) {
         const now = Date.now();
         const available = [];
@@ -363,10 +286,7 @@ class Parcels {
         return available;
     }
 
-    /**
-     * This function computes and returns the total score of the parcels currently carried by the agent.
-     * @returns {number} total score of carried parcels by the agent.
-    */
+    /** @returns {number} */
     carriedScore() {
         let score = 0;
         for (const parcel of this.carried.values()) {
@@ -376,31 +296,18 @@ class Parcels {
     }
 }
 
-/**
- * This class represents the agent's beliefs regarding crates, if they're present on the current map.
- * It also contains functions that update the agent's beliefs over crates upon sensing events and actions.
-*/
 class Crates {
     constructor() {
-        /**
-         * This map contains the crates perceived by the agent.
-         * The crates are stored using their id as the key, and they're forgotten when their position is observed without them.
-         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate>} 
-        */
+        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate>} */
         this.known = new Map();
 
         /**
-         * This map contains the known crates by the agent, indexed by their position instead of their id.
-         * It effectively acts as a view of `known`, which remains the source of belief.
+         * Position index rebuilt from `known`, which remains the source of truth.
          * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate>}
-        */
+         */
         this.byPosition = new Map();
     }
 
-    /** 
-     * This function rebuilds the byPosition map. 
-     * Since crates are few, a full rebuild is simpler than maintaining both maps by hand and the cost is acceptable. 
-    */
     reindexByPosition() {
         this.byPosition.clear();
         for (const crate of this.known.values()) {
@@ -409,10 +316,9 @@ class Crates {
     }
 
     /**
-     * This function updates the agent's beliefs of the crates given their sensing and if they're currently visible.
-     * @param {import("@unitn-asa/deliveroo-js-sdk/types/IOSensing.js").IOCrate []} perceivedCrates 
-     * @param {boolean} isVisible 
-    */
+     * @param {import("@unitn-asa/deliveroo-js-sdk/types/IOSensing.js").IOCrate[]} perceivedCrates
+     * @param {function({x:number,y:number}):boolean} isVisible
+     */
     update(perceivedCrates, isVisible) {
         const seenNow = new Set();
 
@@ -442,28 +348,16 @@ class Crates {
         this.reindexByPosition();
     }
 
-    /**
-     * This function checks and returns if a given position is occupied by a crate.
-     * @param {{x: number, y: number}} position 
-     * @returns {boolean} true if the given position is occupied by a crate, false otherwise.
-    */
     isOccupied(position) {
         return this.getAt(position) !== null;
     }
 
-    /** 
-     * This function returns the crate occupying a given position, or null when that position doesn't contain one.
-     * @returns {import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate | null} the crate occupying the position or null if not present.
-    */
+    /** @returns {import("@unitn-asa/deliveroo-js-sdk/types/IOCrate.js").IOCrate | null} */
     getAt(position) {
         return this.byPosition.get(POSITION_KEY(position)) ?? null;
     }
 
-    /**
-     * This function reconciles a successful PDDL push with the remembered crate position.
-     * @param {Promise<import("./execution.js").ActionOutcome>} outcome
-     * @returns 
-    */
+    /** @param {import("./execution.js").ActionOutcome} outcome */
     reconcileActionOutcome(outcome) {
         const action = outcome?.action;
         if (
@@ -498,25 +392,13 @@ class Crates {
     }
 }
 
-/**
- * This class represents the agent's beliefs regarding the other agents perceived on the map.
- * It also contains functions to update these beliefs given the perceived agents through sensing and a utility function.
-*/
 class Agents {
     constructor() {
-        /**
-         * This map contains the agents perceived through the latest sensing.
-         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOAgent>}
-         */
+        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOAgent>} */
         this.others = new Map();
     }
 
-    /**
-     * This function replaces the perceived agents with the ones contained in the latest sensing.
-     * An agent caught mid-move keeps its fractional coordinate: this is done by design,
-     * as when an agent is mid-move two tiles are locked instead of one.
-     * @param {import("@unitn-asa/deliveroo-js-sdk").IOAgent[]} perceivedAgents
-     */
+    /** @param {import("@unitn-asa/deliveroo-js-sdk").IOAgent[]} perceivedAgents */
     update(perceivedAgents) {
         const seenNow = new Set();
 
@@ -533,15 +415,8 @@ class Agents {
         }
     }
 
-    /**
-     * This function checks and returns whether another agent occupies the given position.
-     * The server locks both the starting and the ending tile of a move.
-     * This is done by the server through fractional agents coordinates, making both tiles count as taken. 
-     * For an agent standing still floor and ceil are the same value and this is the equality check.
-     * @param {{x: number, y: number}} position
-     * @returns {boolean} true if a given position is occupied by another agent, false otherwise.
-    */
     isOccupied(position) {
+        // Fractional sensing coordinates lock both endpoints of an agent's move.
         for (const agent of this.others.values()) {
             if (position.x >= Math.floor(agent.x)
                 && position.x <= Math.ceil(agent.x)
@@ -552,38 +427,16 @@ class Agents {
     }
 }
 
-/**
- * Version carried by every message the two agents exchange.
- * It costs one field and means a later protocol can be told apart from this one instead of guessed at.
-*/
-const PROTOCOL_VERSION = 1;
+const HANDOFF_RESULT_STATUSES = new Set([
+    'succeeded', 'failed', 'cancelled'
+]);
 
-function normalizeCarriedParcelIds(ids) {
-    if (!Array.isArray(ids)) return null;
-    const normalized = new Set();
-    for (const id of ids) {
-        if (typeof id !== 'string' || !id.trim()) return null;
-        normalized.add(id.trim());
-    }
-    return [...normalized].sort((first, second) =>
-        first < second ? -1 : first > second ? 1 : 0
-    );
-}
-
-/**
- * Validates and copies the small state report shared between partners.
- * @param {*} state
- * @returns {{x: number, y: number, carriedCount: number, carriedReward: number,
- *            carriedParcelIds: string[]} | null}
- */
 function normalizePartnerState(state) {
-    const carriedParcelIds = normalizeCarriedParcelIds(state?.carriedParcelIds);
     if (!isFinitePosition(state)
         || !Number.isInteger(state.carriedCount)
         || state.carriedCount < 0
         || !Number.isFinite(state.carriedReward)
-        || state.carriedReward < 0
-        || carriedParcelIds === null) {
+        || state.carriedReward < 0) {
         return null;
     }
 
@@ -591,86 +444,46 @@ function normalizePartnerState(state) {
         x: Number(state.x),
         y: Number(state.y),
         carriedCount: state.carriedCount,
-        carriedReward: Number(state.carriedReward),
-        carriedParcelIds
+        carriedReward: Number(state.carriedReward)
     };
 }
 
-/**
- * This class represents what the agent believes about its teammate: its id, last reported state and parcel claim.
- * Everything the two agents exchange is a belief, so the partner sits here beside the other belief components
- * and is revised in the same place as sensing.
- * It also owns the sending side of the protocol, because a belief about the partner is the only thing worth sending it.
-*/
+/** Holds partner state and the small peer protocol built on it. */
 class Partner {
-    /**
-     * @param {Me} me the agent this partner belongs to, so its log lines say which of the two
-     *        wrote them when both run in one process.
-    */
     constructor(me) {
         this.me = me;
 
-        /**
-         * The partner's agent id, given by the launcher once both agents have connected,
-         * or null when this agent runs alone.
-         * @type {string | null}
-        */
+        /** @type {string | null} */
         this.id = null;
 
-        /**
-         * The last valid state reported by the partner. receivedAt uses this agent's clock.
-         * @type {{x: number, y: number, carriedCount: number, carriedReward: number,
-         *         carriedParcelIds: string[],
-         *         receivedAt: number} | null}
-        */
         this.state = null;
 
-        /**
-         * This agent's latest valid state, kept so a newly connected partner receives it.
-         * @type {{x: number, y: number, carriedCount: number, carriedReward: number,
-         *         carriedParcelIds: string[]} | null}
-        */
         this.myState = null;
+
+        /** @type {{id: string, status: string, reason: string} | null} */
+        this.handoffResult = null;
 
         /** @type {string | null} */
         this.sharedStateFingerprint = null;
 
-        /**
-         * The parcel the partner declared it is going for, with its distance to it, or null when it claims nothing.
-         * @type {{parcelId: string, distance: number} | null}
-        */
+        /** @type {{parcelId: string, distance: number} | null} */
         this.claim = null;
 
-        /**
-         * The parcel this agent has declared to the partner. Kept so the claim can be repeated
-         * to a partner that connected after it was made.
-         * @type {{parcelId: string, distance: number} | null}
-        */
+        /** Saved so a late-connected partner receives the current claim. */
+        /** @type {{parcelId: string, distance: number} | null} */
         this.myClaim = null;
 
-        /**
-         * The parcel ids of the last report sent, or null when nothing has been sent yet.
-         * @type {string | null}
-        */
+        /** @type {string | null} */
         this.sharedParcelIds = null;
 
-        /**
-         * @type {object | null}
-        */
+        /** @type {object | null} */
         this.socket = null;
     }
 
-    /**
-     * @returns {boolean} true when the partner's id has been resolved.
-    */
     get isKnown() {
         return this.id !== null;
     }
 
-    /**
-     * This function records the partner's id, which the launcher knows because it built both.
-     * @param {string} id
-    */
     connected(id) {
         this.id = id;
         console.log(`[${this.me.name || "agent"}] partner is agent ${id}`);
@@ -684,30 +497,23 @@ class Partner {
         queueMicrotask(() => {
             if (this.id !== connectedId) return;
 
-            this.sendCurrentState();
-            if (this.myClaim) this.send({ kind: 'claim', ...this.myClaim });
+            if (this.myState) this.shareState(this.myState);
+            if (this.myClaim) this.send("claim", this.myClaim);
         });
     }
 
-    /**
-     * This function forgets the partner when it leaves the game.
-     * Nothing calls it now that the launcher hands over both ids at startup and neither agent
-     * outlives the other. It stays because it is the right answer if one ever does.
-    */
+    // Removing a disconnected partner's claim prevents a permanent reservation.
     disconnected() {
         console.log(`[${this.me.name || "agent"}] partner disconnected`);
         this.id = null;
         this.state = null;
+        this.handoffResult = null;
         this.sharedStateFingerprint = null;
 
-        // A claim by an agent that is gone would keep a parcel reserved for nobody.
         this.claim = null;
     }
 
-    /**
-     * Records the partner's last valid report and timestamps it on receipt.
-     * @returns {boolean} whether the report was accepted
-     */
+    /** @returns {boolean} */
     setState(state) {
         const normalized = normalizePartnerState(state);
         if (!normalized) return false;
@@ -715,34 +521,34 @@ class Partner {
         return true;
     }
 
-    /**
-     * Saves this agent's current state and shares it only when its values changed.
-     * @param {*} state
-    */
+    /** @returns {boolean} */
+    setHandoffResult(result) {
+        const id = typeof result?.id === 'string' ? result.id.trim() : '';
+        if (!id || !HANDOFF_RESULT_STATUSES.has(result?.status)) return false;
+        this.handoffResult = {
+            id,
+            status: result.status,
+            reason: String(result.reason ?? '')
+        };
+        return true;
+    }
+
+    /** @param {{x:number,y:number,carriedCount:number,carriedReward:number}} state */
     shareState(state) {
         const normalized = normalizePartnerState(state);
         if (!normalized) return;
         this.myState = normalized;
-        this.sendCurrentState();
-    }
+        if (!this.isKnown) return;
 
-    /** Sends the saved local state once per distinct value. */
-    sendCurrentState() {
-        if (!this.isKnown || !this.myState) return;
-
-        const state = this.myState;
-        const fingerprint = `${state.x},${state.y},${state.carriedCount},`
-            + `${state.carriedReward},${JSON.stringify(state.carriedParcelIds)}`;
+        const fingerprint = `${normalized.x},${normalized.y},`
+            + `${normalized.carriedCount},${normalized.carriedReward}`;
         if (fingerprint === this.sharedStateFingerprint) return;
         this.sharedStateFingerprint = fingerprint;
 
-        this.send({ kind: 'state', ...state });
+        this.send("state", normalized);
     }
 
-    /**
-     * This function records what the partner declared. A claim for no parcel is a release.
-     * @param {{parcelId: string, distance: number} | null} claim
-    */
+    /** @param {{parcelId:string,distance:number} | null} claim */
     setClaim(claim) {
         this.claim = claim;
         const me = this.me.name || "agent";
@@ -753,35 +559,24 @@ class Partner {
         );
     }
 
-    /**
-     * This function sends the parcels the agent can see at this moment.
-     * Only first-hand observations are ever sent: what the partner reported is never passed back.
-     * That single rule is what keeps the protocol free of echo loops without message ids, hop counters or expiry times.
-     * @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} parcels
-    */
+    /** @param {import("@unitn-asa/deliveroo-js-sdk").IOParcel[]} parcels */
     shareParcels(parcels) {
         if (!this.isKnown) return;
 
         const parcelIds = parcels.map(parcel => parcel.id).sort().join(",");
-        // Sensing fires many times a second. The set of parcels is the only part worth resending:
-        // rewards decay predictably and the receiver re-estimates them from the time of the report,
-        // so a reward that changed on its own is not news and would only flood the chat.
+        // Send only first-hand parcels, never parcels received from the teammate.
+        // Reward decay is predictable, so resend only when parcel ids change.
         if (parcelIds === this.sharedParcelIds) return;
         this.sharedParcelIds = parcelIds;
 
-        this.send({
-            kind: 'parcels',
+        this.send("parcels", {
             parcels: parcels.map(({ id, x, y, reward }) => ({ id, x, y, reward }))
         });
     }
 
-    /**
-     * This function tells the partner which parcel the agent has committed to.
-     * Only a pickup is a claim: delivering and exploring contend for nothing, so those and a missing
-     * intention release the previous claim instead.
-     * @param {import("./desires.js").Desire | null} intention
-    */
+    /** @param {import("./desires.js").Desire | null} intention */
     announceIntention(intention) {
+        // Only pickups claim a contested resource; other intentions release it.
         const isClaim = intention?.type === 'go_pick_up'
             && typeof intention.id === 'string'
             && Number.isFinite(intention.distance);
@@ -789,89 +584,37 @@ class Partner {
             ? { parcelId: intention.id, distance: intention.distance }
             : null;
 
-        // Only the parcel is compared, not the distance. The distance shrinks with every step towards
-        // the parcel, and resending that would be constant chatter to say something the partner can assume.
+        // Distance changes every step; only a parcel change is worth resending.
         if ((claim?.parcelId ?? null) === (this.myClaim?.parcelId ?? null)) return;
         this.myClaim = claim;
 
-        this.send({
-            kind: 'claim',
+        this.send("claim", {
             parcelId: claim?.parcelId ?? null,
             distance: claim?.distance ?? null
         });
     }
 
-    /** Sends one normalized strategy operation without applying it locally. */
-    shareStrategy(operation) {
-        this.send({ kind: 'strategy', operation });
-    }
-
-    /** Sends one temporary hold without making it part of the Level 2 strategy. */
-    shareHold(hold) {
-        this.send({ kind: 'hold', hold });
-    }
-
-    /** Sends a targeted hold removal without changing local state. */
-    shareHoldClear(id) {
-        if (typeof id !== 'string' || !id.trim()) return;
-        this.send({ kind: 'hold_clear', id });
-    }
-
-    shareHandoff(objective) {
-        this.send({ kind: 'handoff', objective });
-    }
-
-    shareHandoffClear(id) {
-        if (typeof id !== 'string' || !id.trim()) return;
-        this.send({ kind: 'handoff_clear', id: id.trim() });
-    }
-
-    /**
-     * This function checks whether a parcel should be left to the partner.
-     * Both agents run this same comparison over the same two numbers, so exactly one of them yields.
-     * The distances are BFS path lengths rather than straight lines, so the answer stays right
-     * when a wall stands between the two agents and the parcel.
-     * @param {string} parcelId
-     * @param {number} myDistance the agent's own BFS distance to the parcel
-     * @param {string} myId
-     * @returns {boolean} true if the partner is closer and the parcel is its to take.
-    */
+    /** @returns {boolean} */
     outbidsMeOn(parcelId, myDistance, myId) {
+        // BFS distances keep the comparison valid across walls.
         if (this.claim?.parcelId !== parcelId) return false;
         if (this.claim.distance !== myDistance) return this.claim.distance < myDistance;
 
-        // A tie has to break the same way on both sides. Without this, either both agents yield and
-        // nobody collects the parcel, or neither does and both walk to it. Any total order on the ids works.
+        // Both agents use the same id order to break equal-distance claims.
         return this.id < myId;
     }
 
-    /**
-     * This function sends one protocol message. It is internal to the class and does nothing while
-     * the partner is unknown, which is also the case when the agent runs alone.
-     * @param {{kind: string}} payload
-    */
-    send(payload) {
-        if (!this.isKnown) return;
-        this.socket.emitSay(this.id, { v: PROTOCOL_VERSION, ...payload });
+    /** @param {string} kind */
+    send(kind, fields = {}) {
+        if (!this.isKnown || typeof kind !== 'string' || !kind) return;
+        this.socket.emitSay(this.id, { ...fields, kind });
     }
 }
 
-/**
- * This value is used as a default value and is used until the server sends its own movement duration.
- * It states how long the agent waits before giving up on a blocked tile.
-*/
 const DEFAULT_MOVEMENT_DURATION_MS = 1000;
 
-/**
- * This constant states the amount of time in moves that a blocked tile gives.
-*/
 const BLOCKING_AGENT_WAIT_MOVES = 2;
 
-/**
- * This class represents the agent's beliefs over the game's world.
- * It stores map data, game configuration and observation metadata given by the game server and used by the agent.
- * It contains functions that allow the agent to update its world beliefs through sensing events and utility functions.
-*/
 class World {
     constructor() {
         /** Number of X coordinates in the map, not the maximum X coordinate. */
@@ -880,64 +623,37 @@ class World {
         /** Number of Y coordinates in the map, not the maximum Y coordinate. */
         this.height = 0;
 
-        /**
-         * This set contains the visible positions observed in the latest sensing event.
-         * @type {Set<string>}
-        */
+        /** @type {Set<string>} */
         this.visiblePositions = new Set();
 
-        /**
-         * This map contains the whole topology of the current game map. The coordinates are used as keys.
-         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>}
-        */
+        /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile>} */
         this.tiles = new Map();
 
         /**
-         * This map stores known spawner tiles, the time each one was last seen and if from their position an "operational" delivery tile can be reached.
-         * An operational delivery tile is one that, when reached, doesn't lead to a deadlock.
-         * This value is useful for certain edge cases in particular maps where reaching a delivery point doesn't allow the agent to leave a dead end.
+         * Operational spawners can still reach a delivery that does not trap the agent.
          * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {lastCheckedAt: number, canReachOperationalDelivery: boolean}>}
-        */
+         */
         this.spawners = new Map();
 
-        /** 
-         * This map contains known delivery tiles, the time each one was last seen and if from their position an "operational" parcel spawner tile can be reached.
-         * An operational spawner tile is one that, when reached, doesn't lead to a deadlock.
-         * Again, this value is useful for the same cases already explained for the spawners map.
-         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {canReachOperationalSpawner: boolean}>} */
+        /**
+         * Operational deliveries can return to an operational spawner.
+         * @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOTile & {canReachOperationalSpawner: boolean}>}
+         */
         this.deliveries = new Map();
 
-        /**
-         * @type {number}
-        */
         this.movementDuration = -1;
 
-        /**
-         * @type {number}
-         */
         this.observationDistance = -1;
 
         /** Local decay extrapolation interval in ms; 0 disables local extrapolation. */
         this.localDecayIntervalMs = 0;
 
-        /**
-         * Average parcel reward.
-         * @type {number}
-         */
         this.avgReward = -1;
 
-        /**
-         * Variance of the parcels' rewards
-         * @type {number}
-         */
         this.rewardVariance = -1;
     }
 
-    /** 
-     * This function updates the agent's beliefs of the game world given the respective sensing.
-     * It effectively applies the server game configuration.
-     * @param {import ("@unitn-asa/deliveroo-js-sdk/types/IOConfig.js").IOConfig} config
-     */
+    /** @param {import("@unitn-asa/deliveroo-js-sdk/types/IOConfig.js").IOConfig} config */
     updateFromConfig(config) {
         if (!config || !config.GAME) return;
 
@@ -951,14 +667,8 @@ class World {
         this.rewardVariance = parcelsConfig.reward_variance;
     }
 
-    /**
-     * This function rebuilds the local map state from the latest game map information received by the server.
-     * The received tiles are the effective source for both topology and dimensions.
-     * Width and height are coordinate counts, not maximum valid coordinates.
-     * @param {number} _reportedWidth 
-     * @param {number} _reportedHeight 
-     * @param {import ("@unitn-asa/deliveroo-js-sdk").IOTile []} tileset 
-     */
+    // Received tiles define the topology; dimensions are coordinate counts.
+    /** @param {import("@unitn-asa/deliveroo-js-sdk").IOTile[]} tileset */
     updateFromMap(_reportedWidth, _reportedHeight, tileset) {
         this.tiles.clear();
         this.spawners.clear();
@@ -992,10 +702,6 @@ class World {
         this.height = maxY + 1;
     }
 
-    /**
-     * This function rebuilds the visiblePositions set with the latest sensed positions.
-     * @param {{x, y} []} positions 
-     */
     updateVisiblePositions(positions) {
         this.visiblePositions.clear();
 
@@ -1005,20 +711,13 @@ class World {
         }
     }
 
-    /**
-     * This function returns whether a given position was observed in the latest sensing event.
-     * @returns {boolean} true if the given position was observed in the latest sensing, false otherwise.
-     */
+    /** @returns {boolean} */
     isVisible(position) {
         if (!isFinitePosition(position)) return false;
         return this.visiblePositions.has(POSITION_KEY(position));
     }
 
-    /**
-     * This function returns whether a given position can contain a crate or if one can be moved there.
-     * @param {{x, y}} position 
-     * @returns true if the given position contains a crate or if one can be moved there, false otherwise.
-     */
+    /** @returns {boolean} */
     isCrateSpace(position) {
         const tile = this.tiles.get(POSITION_KEY(position));
         if (!tile) return false;
@@ -1026,9 +725,6 @@ class World {
         return tileType === '5' || tileType === '5!';
     }
 
-    /**
-     * This function updates the last check time of the spawners observed with the latest sensing.
-     */
     markVisibleSpawners() {
         const checkedAt = Date.now();
         for (const spawner of this.spawners.values()) {
@@ -1038,17 +734,14 @@ class World {
         }
     }
 
-    /**
-     * This function returns the locally predicted reward loss during one movement.
-     * A zero interval disables local extrapolation, meaning no decay is applied.
-     * @returns {number} the locally predicted decay per movement, 0 if decay is disabled by the server.
-     */
+    // A zero interval disables local decay extrapolation.
+    /** @returns {number} */
     decayPerMove() {
         if (this.localDecayIntervalMs <= 0) return 0;
         return this.movementDuration / this.localDecayIntervalMs;
     }
 
-    /** Returns the current movement duration or the existing local fallback. */
+    /** @returns {number} */
     movementDurationMs() {
         return Number.isFinite(this.movementDuration)
             && this.movementDuration > 0
@@ -1056,22 +749,13 @@ class World {
             : DEFAULT_MOVEMENT_DURATION_MS;
     }
 
-    /**
-     * This function returns how long to wait for another agent to clear a tile, in milliseconds.
-     * The value is computed in movements so the wait scales with the speed of the game.
-     * @returns {number} the tile clear wait time in milliseconds, scaled with movements.
-     */
+    /** @returns {number} */
     blockingAgentWaitMs() {
         return this.movementDurationMs() * BLOCKING_AGENT_WAIT_MOVES;
     }
 }
 
-/**
- * This class is an Aggregator that owns the belief components and wires them to the socket.
- * It only coordinates and delegates, it contains no domain logic.
- * One instance per agent, built wherever an agent is started, so two agents sharing
- * a process cannot overwrite each other's beliefs.
- */
+/** Owns one agent's belief components and socket listeners. */
 export class Beliefs {
     constructor() {
         this.me = new Me();
@@ -1081,41 +765,8 @@ export class Beliefs {
         this.world = new World();
         this.partner = new Partner(this.me);
 
-        // Desires and pathfinding read this same local strategy on every BDI cycle.
+        // Policies persist here; temporary mission objectives live in ObjectiveStore.
         this.rules = new RuleStore();
-
-        this.sensingRevision = 0;
-        this.sensingWaiters = new Set();
-    }
-
-    /** Wakes callers waiting for fresh local or partner state. */
-    advanceSensingRevision() {
-        this.sensingRevision += 1;
-        const waiters = [...this.sensingWaiters];
-        this.sensingWaiters.clear();
-        for (const finish of waiters) finish(true);
-    }
-
-    /** Waits for a later sensing revision or for the remaining deadline. */
-    waitForSensingAfter(revision, timeoutMs) {
-        if (this.sensingRevision > revision) return Promise.resolve(true);
-        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-            return Promise.resolve(false);
-        }
-
-        return new Promise(resolve => {
-            let settled = false;
-            let timeoutId = null;
-            const finish = changed => {
-                if (settled) return;
-                settled = true;
-                this.sensingWaiters.delete(finish);
-                if (timeoutId !== null) clearTimeout(timeoutId);
-                resolve(changed);
-            };
-            this.sensingWaiters.add(finish);
-            timeoutId = setTimeout(() => finish(false), timeoutMs);
-        });
     }
 
     shareCurrentState() {
@@ -1127,22 +778,20 @@ export class Beliefs {
             x: this.me.pos.x,
             y: this.me.pos.y,
             carriedCount: this.parcels.carried.size,
-            carriedReward: this.parcels.carriedScore(),
-            carriedParcelIds: [...this.parcels.carried.keys()]
+            carriedReward: this.parcels.carriedScore()
         });
     }
 
     /**
      * @param {object} socket
      * @param {{objectives?: import("./objectives.js").ObjectiveStore | null}} [options]
-    */
+     */
     init(socket, { objectives = null } = {}) {
         this.partner.socket = socket;
 
         socket.onYou((payload) => {
             this.me.update(payload);
             this.shareCurrentState();
-            this.advanceSensingRevision();
         });
 
         socket.onSensing((sensing) => {
@@ -1167,91 +816,92 @@ export class Beliefs {
                     parcel => !parcel.carriedBy && parcel.reward > 0
                 )
             );
-            this.advanceSensingRevision();
         });
 
-        // Chat carries both partner messages and whatever a human types, so a message is only revised into
-        // a belief when it comes from the partner and is a protocol message this version understands.
-        // The routing stays here rather than inside Partner: this class coordinates and delegates, and this
-        // way Partner does not need to know that Parcels exists.
         socket.onMsg((senderId, _senderName, message) => {
             if (!this.partner.isKnown
                 || senderId !== this.partner.id
-                || message?.v !== PROTOCOL_VERSION) {
+                || !message
+                || typeof message !== 'object'
+                || Array.isArray(message)
+                || typeof message.kind !== 'string') {
                 return;
             }
 
-            if (message.kind === 'state') {
-                if (this.partner.setState(message)) {
-                    this.advanceSensingRevision();
-                }
-                return;
-            }
-
-            if (message.kind === 'parcels' && Array.isArray(message.parcels)) {
-                this.parcels.mergeReported(message.parcels);
-                return;
-            }
-
-            // Scope controls where the same normalized operation is applied.
-            // The receiver stores it locally and does not send it back.
-            if (message.kind === 'strategy') {
-                applyStrategyOperation(this.rules, message.operation);
-                return;
-            }
-
-            if (message.kind === 'hold') {
-                const result = this.rules.setHold(message.hold);
-                if (result.ok) this.advanceSensingRevision();
-                return;
-            }
-
-            if (message.kind === 'hold_clear') {
-                if (typeof message.id === 'string' && message.id.trim()) {
-                    if (this.rules.clearHold(message.id)) {
-                        this.advanceSensingRevision();
+            switch (message.kind) {
+                case 'state':
+                    this.partner.setState(message);
+                    return;
+                case 'parcels':
+                    if (Array.isArray(message.parcels)) {
+                        this.parcels.mergeReported(message.parcels);
                     }
-                }
-                return;
-            }
-
-            if (message.kind === 'handoff') {
-                const objective = normalizeHandoffObjective(message.objective);
-                if (!objective
-                    || objective.role !== 'receiver'
-                    || objective.receiverId !== this.me.id
-                    || !objectives) return;
-                try {
-                    objectives.requestHandoff(objective);
-                    this.advanceSensingRevision();
-                } catch {}
-                return;
-            }
-
-            if (message.kind === 'handoff_clear') {
-                if (typeof message.id === 'string' && message.id.trim()) {
-                    if (objectives?.clear(
-                        message.id.trim(),
-                        "handoff cleared by partner"
-                    )) {
-                        this.advanceSensingRevision();
+                    return;
+                case 'strategy':
+                    // Remote strategies are applied locally and are not echoed back.
+                    this.rules.apply(message.operation);
+                    return;
+                case 'hold':
+                    if (!objectives) return;
+                    try {
+                        objectives.request("hold", message.hold);
+                    } catch {}
+                    return;
+                case 'hold_clear':
+                    if (typeof message.id === 'string' && message.id.trim()) {
+                        objectives?.clear(
+                            message.id.trim(),
+                            "hold cleared by partner"
+                        );
                     }
+                    return;
+                case 'handoff': {
+                    const objective = message.objective;
+                    if (!objective
+                        || typeof objective !== 'object'
+                        || Array.isArray(objective)
+                        || objective.role !== 'receiver'
+                        || objective.receiverId !== this.me.id
+                        || !objectives) return;
+                    try {
+                        const { completion } = objectives.request(
+                            "handoff",
+                            objective
+                        );
+                        void completion.then(result => {
+                            this.partner.send("handoff_result", {
+                                id: result.objectiveId,
+                                status: result.status,
+                                reason: result.reason
+                            });
+                        });
+                    } catch {}
+                    return;
                 }
-                return;
-            }
-
-            // A claim for no parcel is the release, so no third kind of message is needed.
-            // Anything else is malformed and is dropped rather than acted on.
-            if (message.kind === 'claim') {
-                if (message.parcelId === null) {
-                    this.partner.setClaim(null);
-                } else if (typeof message.parcelId === 'string'
-                    && Number.isFinite(message.distance)) {
-                    this.partner.setClaim({
-                        parcelId: message.parcelId,
-                        distance: message.distance
-                    });
-                }
+                case 'handoff_result':
+                    this.partner.setHandoffResult(message);
+                    return;
+                case 'handoff_clear':
+                    if (typeof message.id === 'string' && message.id.trim()) {
+                        objectives?.clear(
+                            message.id.trim(),
+                            "handoff cleared by partner"
+                        );
+                    }
+                    return;
+                case 'claim':
+                    if (message.parcelId === null) {
+                        this.partner.setClaim(null);
+                    } else if (typeof message.parcelId === 'string'
+                        && Number.isFinite(message.distance)) {
+                        this.partner.setClaim({
+                            parcelId: message.parcelId,
+                            distance: message.distance
+                        });
+                    }
+                    return;
+                default:
+                    return;
             }
         });
 

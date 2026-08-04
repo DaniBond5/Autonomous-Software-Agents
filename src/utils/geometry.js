@@ -28,9 +28,9 @@ const CARDINAL_DIRECTIONS = Object.freeze([
  */
 
 /**
- * Computes shortest paths from one position to every reachable tile.
+ * Computes one shortest-path search shared by multiple distance queries.
  * @param {import("../bdi/beliefs.js").Beliefs} beliefs
- * @param {{x: number, y: number}} start
+ * @param {{x:number,y:number}} start
  * @param {PathfindingOptions} [options]
  * @returns {ShortestPaths | null}
  */
@@ -62,10 +62,10 @@ export function shortestPathsFrom(beliefs, start, options = {}) {
 }
 
 /**
- * Returns the shortest-path distance to a target from an existing search.
+ * Unreachable targets have infinite distance.
  * @param {ShortestPaths | null} search
  * @param {{x: number, y: number}} target
- * @returns {number} path length, or Infinity when the target is unreachable
+ * @returns {number}
  */
 export function distanceFromSearch(search, target) {
     if (!search || !target) return Infinity;
@@ -73,10 +73,9 @@ export function distanceFromSearch(search, target) {
 }
 
 /**
- * Reconstructs the shortest path to a target from an existing search.
  * @param {ShortestPaths | null} search
  * @param {{x: number, y: number}} target
- * @returns {false | {x: number, y: number}[]} false if unreachable, otherwise the path (empty at start)
+ * @returns {false | {x: number, y: number}[]}
  */
 function pathFromSearch(search, target) {
     if (!Number.isFinite(distanceFromSearch(search, target))) return false;
@@ -94,11 +93,11 @@ function pathFromSearch(search, target) {
 }
 
 /**
- * Performs a Breadth First Search from an optional starting position to a goal.
+ * Returns an empty path at the goal and false when no route exists.
  * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @param {import("@unitn-asa/deliveroo-js-sdk").IOTile} goalTile
  * @param {PathfindingOptions & {startingPosition?: {x: number, y: number}}} [options]
- * @returns {false | {x: number, y: number}[]} false if unreachable, otherwise the path (empty at the goal)
+ * @returns {false | {x: number, y: number}[]}
  */
 export function BFS(beliefs, goalTile, options = {}) {
     if (!goalTile) return false;
@@ -139,36 +138,33 @@ export function BFS(beliefs, goalTile, options = {}) {
     return false;
 }
 
-/**
- * A tile is traversable when it exists and is not a wall.
- * @param {import("../bdi/beliefs.js").Beliefs} beliefs
- * @param {{x: number, y: number}} position
- * @returns {boolean}
- */
+/** @returns {boolean} */
 export function isPositionTraversable(beliefs, {x: positionX, y: positionY}) {
     const tile = beliefs.world.tiles.get(`${positionX},${positionY}`);
     return tile != null && tile.type != 0;
 }
 
-/**
- * Checks whether a move follows map adjacency, traversability and destination direction.
- * @param {import("../bdi/beliefs.js").Beliefs} beliefs
- * @param {{x: number, y: number}} from
- * @param {{x: number, y: number}} to
- * @returns {boolean}
- */
+/** @returns {boolean} */
 export function isMoveAllowed(beliefs, from, to) {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     if (Math.abs(dx) + Math.abs(dy) !== 1 || !isPositionTraversable(beliefs, to)) return false;
 
+    // A directional tile rejects entry against its arrow.
     const destinationDirection = directionalTiles[beliefs.world.tiles.get(POSITION_KEY(to)).type];
     return !destinationDirection
         || dx !== -destinationDirection.dx
         || dy !== -destinationDirection.dy;
 }
 
-/** Checks whether three tiles form a valid push line on the static map. */
+/**
+ * Checks a push line against static map geometry only.
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
+ * @param {{x:number,y:number}} behind
+ * @param {{x:number,y:number}} cratePosition
+ * @param {{x:number,y:number}} destination
+ * @returns {boolean}
+ */
 export function isPushGeometryAllowed(
     beliefs,
     behind,
@@ -195,7 +191,14 @@ export function isPushGeometryAllowed(
         && beliefs.world.isCrateSpace(destination);
 }
 
-/** Checks whether a geometrically valid push applies to the current crates. */
+/**
+ * Adds current crate occupancy to the static push geometry check.
+ * @param {import("../bdi/beliefs.js").Beliefs} beliefs
+ * @param {{x:number,y:number}} behind
+ * @param {{x:number,y:number}} cratePosition
+ * @param {{x:number,y:number}} destination
+ * @returns {boolean}
+ */
 export function isPushTransitionAllowed(
     beliefs,
     behind,
@@ -207,13 +210,8 @@ export function isPushTransitionAllowed(
         && !beliefs.crates.isOccupied(destination);
 }
 
-/**
- * Finds a directed corridor whose crate crossings have a valid initial push.
- * It selects entry/exit for PDDL without simulating subsequent crate states.
- * @param {import("../bdi/beliefs.js").Beliefs} beliefs
- * @param {{x: number, y: number}} goalTile
- * @returns {false | {entry:{x:number,y:number},exit:{x:number,y:number}}}
- */
+// Select a directed crate corridor for PDDL without simulating later pushes.
+/** @returns {false | {entry:{x:number,y:number},exit:{x:number,y:number}}} */
 export function findCrateCorridor(beliefs, goalTile) {
     const startingPosition = beliefs?.me?.pos;
     if (!goalTile || !startingPosition
@@ -289,12 +287,6 @@ function crateCorridorFromPath(beliefs, start, path) {
     };
 }
 
-/**
- * @param {import("../bdi/beliefs.js").Beliefs} beliefs
- * @param {{x: number, y: number}} position
- * @param {PathfindingOptions} [options]
- * @returns {{x: number, y: number}[]}
- */
 function getNeighbors(beliefs, position, options = {}) {
     const neighbors = [];
 
