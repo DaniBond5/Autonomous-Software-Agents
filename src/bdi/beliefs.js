@@ -551,11 +551,6 @@ class Agents {
     }
 }
 
-/**
- * Version carried by every message the two agents exchange.
- * It costs one field and means a later protocol can be told apart from this one instead of guessed at.
-*/
-const PROTOCOL_VERSION = 1;
 const HANDOFF_RESULT_STATUSES = new Set([
     'succeeded', 'failed', 'cancelled'
 ]);
@@ -574,16 +569,6 @@ function normalizePartnerState(state) {
         y: Number(state.y),
         carriedCount: state.carriedCount,
         carriedReward: Number(state.carriedReward)
-    };
-}
-
-function normalizeHandoffResult(id, status, reason) {
-    const normalizedId = typeof id === 'string' ? id.trim() : '';
-    if (!normalizedId || !HANDOFF_RESULT_STATUSES.has(status)) return null;
-    return {
-        id: normalizedId,
-        status,
-        reason: String(reason ?? '')
     };
 }
 
@@ -660,8 +645,8 @@ class Partner {
         queueMicrotask(() => {
             if (this.id !== connectedId) return;
 
-            this.sendCurrentState();
-            if (this.myClaim) this.send({ kind: 'claim', ...this.myClaim });
+            if (this.myState) this.shareState(this.myState);
+            if (this.myClaim) this.send("claim", this.myClaim);
         });
     }
 
@@ -669,6 +654,7 @@ class Partner {
         console.log(`[${this.me.name || "agent"}] partner disconnected`);
         this.id = null;
         this.state = null;
+        this.handoffResult = null;
         this.sharedStateFingerprint = null;
 
         // A claim by an agent that is gone would keep a parcel reserved for nobody.
@@ -683,13 +669,13 @@ class Partner {
     }
 
     setHandoffResult(result) {
-        const normalized = normalizeHandoffResult(
-            result?.id,
-            result?.status,
-            result?.reason
-        );
-        if (!normalized) return false;
-        this.handoffResult = normalized;
+        const id = typeof result?.id === 'string' ? result.id.trim() : '';
+        if (!id || !HANDOFF_RESULT_STATUSES.has(result?.status)) return false;
+        this.handoffResult = {
+            id,
+            status: result.status,
+            reason: String(result.reason ?? '')
+        };
         return true;
     }
 
@@ -697,19 +683,14 @@ class Partner {
         const normalized = normalizePartnerState(state);
         if (!normalized) return;
         this.myState = normalized;
-        this.sendCurrentState();
-    }
+        if (!this.isKnown) return;
 
-    sendCurrentState() {
-        if (!this.isKnown || !this.myState) return;
-
-        const state = this.myState;
-        const fingerprint = `${state.x},${state.y},${state.carriedCount},`
-            + `${state.carriedReward}`;
+        const fingerprint = `${normalized.x},${normalized.y},`
+            + `${normalized.carriedCount},${normalized.carriedReward}`;
         if (fingerprint === this.sharedStateFingerprint) return;
         this.sharedStateFingerprint = fingerprint;
 
-        this.send({ kind: 'state', ...state });
+        this.send("state", normalized);
     }
 
     /**
@@ -742,8 +723,7 @@ class Partner {
         if (parcelIds === this.sharedParcelIds) return;
         this.sharedParcelIds = parcelIds;
 
-        this.send({
-            kind: 'parcels',
+        this.send("parcels", {
             parcels: parcels.map(({ id, x, y, reward }) => ({ id, x, y, reward }))
         });
     }
@@ -767,45 +747,10 @@ class Partner {
         if ((claim?.parcelId ?? null) === (this.myClaim?.parcelId ?? null)) return;
         this.myClaim = claim;
 
-        this.send({
-            kind: 'claim',
+        this.send("claim", {
             parcelId: claim?.parcelId ?? null,
             distance: claim?.distance ?? null
         });
-    }
-
-    /** Sends one normalized strategy operation without applying it locally. */
-    shareStrategy(operation) {
-        this.send({ kind: 'strategy', operation });
-    }
-
-    /** Sends one temporary hold without making it part of the Level 2 strategy. */
-    shareHold(hold) {
-        this.send({ kind: 'hold', hold });
-    }
-
-    /** Sends a targeted hold removal without changing local state. */
-    shareHoldClear(id) {
-        if (typeof id !== 'string' || !id.trim()) return;
-        this.send({ kind: 'hold_clear', id });
-    }
-
-    shareHandoff(objective) {
-        this.send({ kind: 'handoff', objective });
-    }
-
-    shareHandoffResult(result) {
-        const normalized = normalizeHandoffResult(
-            result?.objectiveId,
-            result?.status,
-            result?.reason
-        );
-        if (normalized) this.send({ kind: 'handoff_result', ...normalized });
-    }
-
-    shareHandoffClear(id) {
-        if (typeof id !== 'string' || !id.trim()) return;
-        this.send({ kind: 'handoff_clear', id: id.trim() });
     }
 
     /**
@@ -827,14 +772,9 @@ class Partner {
         return this.id < myId;
     }
 
-    /**
-     * This function sends one protocol message. It is internal to the class and does nothing while
-     * the partner is unknown, which is also the case when the agent runs alone.
-     * @param {{kind: string}} payload
-    */
-    send(payload) {
-        if (!this.isKnown) return;
-        this.socket.emitSay(this.id, { v: PROTOCOL_VERSION, ...payload });
+    send(kind, fields = {}) {
+        if (!this.isKnown || typeof kind !== 'string' || !kind) return;
+        this.socket.emitSay(this.id, { ...fields, kind });
     }
 }
 
@@ -1116,99 +1056,90 @@ export class Beliefs {
             );
         });
 
-        // Chat carries both partner messages and whatever a human types, so a message is only revised into
-        // a belief when it comes from the partner and is a protocol message this version understands.
-        // The routing stays here rather than inside Partner: this class coordinates and delegates, and this
-        // way Partner does not need to know that Parcels exists.
         socket.onMsg((senderId, _senderName, message) => {
             if (!this.partner.isKnown
                 || senderId !== this.partner.id
-                || message?.v !== PROTOCOL_VERSION) {
+                || !message
+                || typeof message !== 'object'
+                || Array.isArray(message)
+                || typeof message.kind !== 'string') {
                 return;
             }
 
-            if (message.kind === 'state') {
-                this.partner.setState(message);
-                return;
-            }
-
-            if (message.kind === 'parcels' && Array.isArray(message.parcels)) {
-                this.parcels.mergeReported(message.parcels);
-                return;
-            }
-
-            // Remote strategies are applied locally and are not echoed back.
-            if (message.kind === 'strategy') {
-                this.rules.apply(message.operation);
-                return;
-            }
-
-            if (message.kind === 'hold') {
-                if (!objectives) return;
-                try {
-                    objectives.request("hold", message.hold);
-                } catch {}
-                return;
-            }
-
-            if (message.kind === 'hold_clear') {
-                if (typeof message.id === 'string' && message.id.trim()) {
-                    objectives?.clear(
-                        message.id.trim(),
-                        "hold cleared by partner"
-                    );
+            switch (message.kind) {
+                case 'state':
+                    this.partner.setState(message);
+                    return;
+                case 'parcels':
+                    if (Array.isArray(message.parcels)) {
+                        this.parcels.mergeReported(message.parcels);
+                    }
+                    return;
+                case 'strategy':
+                    // Remote strategies are applied locally and are not echoed back.
+                    this.rules.apply(message.operation);
+                    return;
+                case 'hold':
+                    if (!objectives) return;
+                    try {
+                        objectives.request("hold", message.hold);
+                    } catch {}
+                    return;
+                case 'hold_clear':
+                    if (typeof message.id === 'string' && message.id.trim()) {
+                        objectives?.clear(
+                            message.id.trim(),
+                            "hold cleared by partner"
+                        );
+                    }
+                    return;
+                case 'handoff': {
+                    const objective = message.objective;
+                    if (!objective
+                        || typeof objective !== 'object'
+                        || Array.isArray(objective)
+                        || objective.role !== 'receiver'
+                        || objective.receiverId !== this.me.id
+                        || !objectives) return;
+                    try {
+                        const { completion } = objectives.request(
+                            "handoff",
+                            objective
+                        );
+                        void completion.then(result => {
+                            this.partner.send("handoff_result", {
+                                id: result.objectiveId,
+                                status: result.status,
+                                reason: result.reason
+                            });
+                        });
+                    } catch {}
+                    return;
                 }
-                return;
-            }
-
-            if (message.kind === 'handoff') {
-                const objective = message.objective;
-                if (!objective
-                    || typeof objective !== 'object'
-                    || Array.isArray(objective)
-                    || objective.role !== 'receiver'
-                    || objective.receiverId !== this.me.id
-                    || !objectives) return;
-                try {
-                    const { completion } = objectives.request(
-                        "handoff",
-                        objective
-                    );
-                    // The receiver reports only the final result; this is not an ACK.
-                    void completion.then(result => {
-                        this.partner.shareHandoffResult(result);
-                    });
-                } catch {}
-                return;
-            }
-
-            if (message.kind === 'handoff_result') {
-                this.partner.setHandoffResult(message);
-                return;
-            }
-
-            if (message.kind === 'handoff_clear') {
-                if (typeof message.id === 'string' && message.id.trim()) {
-                    objectives?.clear(
-                        message.id.trim(),
-                        "handoff cleared by partner"
-                    );
-                }
-                return;
-            }
-
-            // A claim for no parcel is the release, so no third kind of message is needed.
-            // Anything else is malformed and is dropped rather than acted on.
-            if (message.kind === 'claim') {
-                if (message.parcelId === null) {
-                    this.partner.setClaim(null);
-                } else if (typeof message.parcelId === 'string'
-                    && Number.isFinite(message.distance)) {
-                    this.partner.setClaim({
-                        parcelId: message.parcelId,
-                        distance: message.distance
-                    });
-                }
+                case 'handoff_result':
+                    this.partner.setHandoffResult(message);
+                    return;
+                case 'handoff_clear':
+                    if (typeof message.id === 'string' && message.id.trim()) {
+                        objectives?.clear(
+                            message.id.trim(),
+                            "handoff cleared by partner"
+                        );
+                    }
+                    return;
+                case 'claim':
+                    if (message.parcelId === null) {
+                        this.partner.setClaim(null);
+                    } else if (typeof message.parcelId === 'string'
+                        && Number.isFinite(message.distance)) {
+                        this.partner.setClaim({
+                            parcelId: message.parcelId,
+                            distance: message.distance
+                        });
+                    }
+                    return;
+                default:
+                    return;
             }
         });
 

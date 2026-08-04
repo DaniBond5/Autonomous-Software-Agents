@@ -444,7 +444,9 @@ export class LLMExecutor {
         const result = this.beliefs.rules.apply(raw);
         if (!result.ok) return failure(`Cannot apply strategy: ${result.text}`);
         if (this.beliefs.partner.isKnown) {
-            this.beliefs.partner.shareStrategy(result.operation);
+            this.beliefs.partner.send("strategy", {
+                operation: result.operation
+            });
         }
         return success(result.text);
     }
@@ -575,7 +577,9 @@ export class LLMExecutor {
         }
 
         try {
-            this.beliefs.partner.shareHold(partnerHold);
+            this.beliefs.partner.send("hold", {
+                hold: partnerHold
+            });
             return await this.waitForRendezvous(
                 center,
                 request.radius,
@@ -585,7 +589,9 @@ export class LLMExecutor {
         } finally {
             this.objectives.clear(rendezvousId, "rendezvous cleanup");
             try {
-                this.beliefs.partner.shareHoldClear(rendezvousId);
+                this.beliefs.partner.send("hold_clear", {
+                    id: rendezvousId
+                });
             } catch (error) {
                 dbg("rendezvous cleanup message failed", error);
             }
@@ -710,7 +716,9 @@ export class LLMExecutor {
 
         try {
             // The LLM only requests the action. Both BDI loops execute it.
-            this.beliefs.partner.shareHandoff(receiverObjective);
+            this.beliefs.partner.send("handoff", {
+                objective: receiverObjective
+            });
             return await this.waitForHandoff(
                 completion,
                 receiverObjectiveId,
@@ -720,7 +728,9 @@ export class LLMExecutor {
         } finally {
             this.objectives.clear(giverObjectiveId, "parcel handoff cleanup");
             try {
-                this.beliefs.partner.shareHandoffClear(receiverObjectiveId);
+                this.beliefs.partner.send("handoff_clear", {
+                    id: receiverObjectiveId
+                });
             } catch (error) {
                 dbg("parcel handoff cleanup message failed", error);
             }

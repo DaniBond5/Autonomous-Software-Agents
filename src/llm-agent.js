@@ -23,19 +23,6 @@ function messageText(message) {
 }
 
 /**
- * Whether a message is one of the two agents talking to each other.
- * Beliefs handles those, and reading one here would turn a parcel report into a goal.
- * @param {*} message
- * @returns {boolean}
- */
-function isProtocolMessage(message) {
-    return typeof message === "object"
-        && message !== null
-        && typeof message.kind === "string"
-        && Number.isFinite(message.v);
-}
-
-/**
  * Whether a message may set a goal. With no filter configured anyone can,
  * which is what a real game needs; during a test the filter keeps the agent
  * from reacting to the chat of every other player.
@@ -73,9 +60,7 @@ export function startLlmAgent(socket) {
     });
 
     socket.onMsg((id, name, message) => {
-        // The partner talks on this same channel. The sender check is the point, the shape check
-        // covers the window before the launcher has handed over the partner's id.
-        if (id === beliefs.partner.id || isProtocolMessage(message)) return;
+        if (id === beliefs.partner.id) return;
 
         const text = messageText(message);
         if (!text) return;
