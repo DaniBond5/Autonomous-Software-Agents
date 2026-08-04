@@ -18,6 +18,12 @@ const samePosition = (first, second) => Boolean(
 const areAdjacent = (first, second) =>
     Math.abs(first.x - second.x) + Math.abs(first.y - second.y) === 1;
 
+// A giver already carrying the parcel starts at "drop" instead of "pickup".
+const HANDOFF_START_PHASES = {
+    giver: new Set(["pickup", "drop"]),
+    receiver: new Set(["wait"]),
+};
+
 function normalizeHandoffObjective(raw) {
     if (!isObject(raw) || raw.type !== "handoff") return null;
 
@@ -28,6 +34,9 @@ function normalizeHandoffObjective(raw) {
     const role = raw.role === "giver" || raw.role === "receiver"
         ? raw.role
         : null;
+    const startPhase = role && HANDOFF_START_PHASES[role].has(raw.startPhase)
+        ? raw.startPhase
+        : null;
     const pointNames = [
         "parcelStart", "handoffTile", "waitTile", "exitTile", "deliveryTile"
     ];
@@ -36,6 +45,7 @@ function normalizeHandoffObjective(raw) {
     if (!id || !parcelId || !giverId || !receiverId
         || giverId === receiverId
         || !role
+        || !startPhase
         || points.some(point => !isIntegerPoint(point))
         || !areAdjacent(raw.parcelStart, raw.handoffTile)
         || samePosition(raw.parcelStart, raw.waitTile)
@@ -51,6 +61,7 @@ function normalizeHandoffObjective(raw) {
         id,
         type: "handoff",
         role,
+        startPhase,
         parcelId,
         giverId,
         receiverId,
@@ -170,10 +181,10 @@ export class ObjectiveStore {
                 type: "handoff",
             });
             if (!normalized) throw new TypeError("invalid handoff objective");
-            objective = {
-                ...normalized,
-                phase: normalized.role === "giver" ? "pickup" : "wait",
-            };
+            // Only the runtime `phase` is kept: _reconcileHandoff advances it,
+            // so a retained `startPhase` would soon contradict it.
+            const { startPhase, ...rest } = normalized;
+            objective = { ...rest, phase: startPhase };
         } else {
             throw new TypeError(`unsupported objective type: ${String(type)}`);
         }

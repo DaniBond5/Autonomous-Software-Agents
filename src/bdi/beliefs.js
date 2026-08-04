@@ -448,6 +448,29 @@ function traceCoordination(event, kind, fields = {}) {
     });
 }
 
+/**
+ * @typedef {{x: number, y: number, carriedCount: number,
+ *     carriedReward: number, carriedParcelIds: string[]}} PartnerState
+ */
+
+/**
+ * @typedef {{id: string, role: 'giver' | 'receiver',
+ *     status: string, reason: string}} HandoffResult
+ */
+
+/** @returns {string[] | null} a fresh trimmed, unique and sorted list */
+function normalizeCarriedParcelIds(value) {
+    if (!Array.isArray(value)) return null;
+
+    const ids = new Set();
+    for (const entry of value) {
+        if (typeof entry !== 'string' || !entry.trim()) return null;
+        ids.add(entry.trim());
+    }
+    return [...ids].sort();
+}
+
+/** @returns {PartnerState | null} */
 function normalizePartnerState(state) {
     if (!isFinitePosition(state)
         || !Number.isInteger(state.carriedCount)
@@ -457,11 +480,19 @@ function normalizePartnerState(state) {
         return null;
     }
 
+    // A count disagreeing with the ids leaves the carried parcels ambiguous.
+    const carriedParcelIds = normalizeCarriedParcelIds(state.carriedParcelIds);
+    if (!carriedParcelIds
+        || carriedParcelIds.length !== state.carriedCount) {
+        return null;
+    }
+
     return {
         x: Number(state.x),
         y: Number(state.y),
         carriedCount: state.carriedCount,
-        carriedReward: Number(state.carriedReward)
+        carriedReward: Number(state.carriedReward),
+        carriedParcelIds
     };
 }
 
@@ -473,12 +504,15 @@ class Partner {
         /** @type {string | null} */
         this.id = null;
 
+        /** @type {(PartnerState & {receivedAt: number}) | null} */
         this.state = null;
 
+        /** @type {PartnerState | null} */
         this.myState = null;
 
-        /** @type {{id: string, status: string, reason: string} | null} */
-        this.handoffResult = null;
+        // One slot per role, so a giver result never masks a receiver result.
+        /** @type {{giver: HandoffResult | null, receiver: HandoffResult | null}} */
+        this.handoffResults = { giver: null, receiver: null };
 
         /** @type {string | null} */
         this.sharedStateFingerprint = null;
@@ -524,7 +558,7 @@ class Partner {
         console.log(`[${this.me.name || "agent"}] partner disconnected`);
         this.id = null;
         this.state = null;
-        this.handoffResult = null;
+        this.handoffResults = { giver: null, receiver: null };
         this.sharedStateFingerprint = null;
 
         this.claim = null;
@@ -541,24 +575,42 @@ class Partner {
     /** @returns {boolean} */
     setHandoffResult(result) {
         const id = typeof result?.id === 'string' ? result.id.trim() : '';
-        if (!id || !HANDOFF_RESULT_STATUSES.has(result?.status)) return false;
-        this.handoffResult = {
+        const role = result?.role === 'giver' || result?.role === 'receiver'
+            ? result.role
+            : null;
+        if (!id || !role || !HANDOFF_RESULT_STATUSES.has(result?.status)) {
+            return false;
+        }
+
+        this.handoffResults[role] = {
             id,
+            role,
             status: result.status,
             reason: String(result.reason ?? '')
         };
         return true;
     }
 
-    /** @param {{x:number,y:number,carriedCount:number,carriedReward:number}} state */
+    /**
+     * Matching both role and id keeps a stale result out of a later handoff.
+     * @returns {HandoffResult | null}
+     */
+    handoffResultFor(role, objectiveId) {
+        const result = this.handoffResults[role] ?? null;
+        return result?.id === objectiveId ? result : null;
+    }
+
+    /** @param {PartnerState} state */
     shareState(state) {
         const normalized = normalizePartnerState(state);
         if (!normalized) return;
         this.myState = normalized;
         if (!this.isKnown) return;
 
+        // The carried ids change even when count and reward stay the same.
         const fingerprint = `${normalized.x},${normalized.y},`
-            + `${normalized.carriedCount},${normalized.carriedReward}`;
+            + `${normalized.carriedCount},${normalized.carriedReward},`
+            + JSON.stringify(normalized.carriedParcelIds);
         if (fingerprint === this.sharedStateFingerprint) return;
         this.sharedStateFingerprint = fingerprint;
 
@@ -796,7 +848,8 @@ export class Beliefs {
             x: this.me.pos.x,
             y: this.me.pos.y,
             carriedCount: this.parcels.carried.size,
-            carriedReward: this.parcels.carriedScore()
+            carriedReward: this.parcels.carriedScore(),
+            carriedParcelIds: [...this.parcels.carried.keys()]
         });
     }
 
@@ -884,23 +937,39 @@ export class Beliefs {
                     if (!objective
                         || typeof objective !== 'object'
                         || Array.isArray(objective)
-                        || objective.role !== 'receiver'
-                        || objective.receiverId !== this.me.id
                         || !objectives) return;
+
+                    // Accept either role, but only for the configured pair.
+                    const assignedToMe = objective.role === 'giver'
+                        ? objective.giverId === this.me.id
+                            && objective.receiverId === this.partner.id
+                        : objective.role === 'receiver'
+                            && objective.receiverId === this.me.id
+                            && objective.giverId === this.partner.id;
+                    if (!assignedToMe) return;
+
                     try {
-                        const { completion } = objectives.request(
-                            "handoff",
-                            objective
-                        );
+                        const { objective: accepted, completion } =
+                            objectives.request("handoff", objective);
                         traceCoordination("receive", message.kind, message);
                         void completion.then(result => {
                             this.partner.send("handoff_result", {
                                 id: result.objectiveId,
+                                role: accepted.role,
                                 status: result.status,
                                 reason: result.reason
                             });
                         });
-                    } catch {}
+                    } catch (error) {
+                        const id = typeof objective.id === 'string'
+                            ? objective.id.trim()
+                            : '';
+                        console.warn(
+                            `[${this.me.name || 'agent'}] rejected handoff objective`
+                            + `${id ? ` ${id}` : ''}: `
+                            + `${error instanceof Error ? error.message : String(error)}`
+                        );
+                    }
                     return;
                 }
                 case 'handoff_result':
