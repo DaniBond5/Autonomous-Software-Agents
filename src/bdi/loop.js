@@ -26,13 +26,6 @@ export const wait = (ms) =>
 const intentionKey = (intention) =>
     intention ? desireKey(intention) : null;
 
-/**
- * Resolves a pickup or putdown objective from the real server outcome.
- * @param {import("./desires.js").Desire | null} intention
- * @param {import("./execution.js").ActionOutcome} outcome
- * @param {import("./objectives.js").ObjectiveStore | null} objectives
- * @returns {boolean} whether the outcome belongs to an external action objective
- */
 function settleActionObjective(intention, outcome, objectives) {
     const actionType = outcome?.action?.action;
     const expectedObjectiveType = actionType === "pickup"
@@ -53,13 +46,9 @@ function settleActionObjective(intention, outcome, objectives) {
         && result.length > 0) {
         const action = actionType === "pickup" ? "picked up" : "put down";
         const parcels = result.length === 1 ? "parcel" : "parcels";
-        objectives.complete(
-            objectiveId,
-            `${action} ${result.length} ${parcels}`
-        );
+        objectives.complete(objectiveId, `${action} ${result.length} ${parcels}`);
         return true;
     }
-
     if (Array.isArray(result) && result.length === 0) {
         objectives.fail(
             objectiveId,
@@ -156,12 +145,27 @@ export async function runAgentLoop(
         }
         if (planningResult.status === "idle"
             && objectiveId
-            && currentIntention.type === "go_to_tile"
             && objectives?.isActive(objectiveId)) {
-            const { x, y } = currentIntention.target;
-            objectives.complete(objectiveId, `reached target (${x},${y})`);
-            currentIntention = null;
-            continue;
+            if (currentIntention.type === "go_to_tile") {
+                const { x, y } = currentIntention.target;
+                objectives.complete(objectiveId, `reached target (${x},${y})`);
+                currentIntention = null;
+                continue;
+            }
+            if (currentIntention.type === "handoff"
+                && currentIntention.role === "giver"
+                && currentIntention.phase === "exit"
+                && beliefs.me.pos.x === currentIntention.exitTile.x
+                && beliefs.me.pos.y === currentIntention.exitTile.y) {
+                objectives.complete(
+                    objectiveId,
+                    `left handoff tile after dropping parcel ${currentIntention.parcelId}`
+                );
+                currentIntention = null;
+                planner.resetPlanningState("giver handoff finished");
+                beliefs.partner.announceIntention(null);
+                continue;
+            }
         }
 
         if (planningResult.status === "unreachable"
@@ -192,8 +196,17 @@ export async function runAgentLoop(
         beliefs.parcels.reconcileActionOutcome(
             outcome,
             beliefs.me.id,
-            beliefs.me.pos
+            beliefs.me.pos,
+            beliefs.world.deliveries.has(
+                `${beliefs.me.pos.x},${beliefs.me.pos.y}`
+            )
         );
+        const actionType = outcome?.action?.action;
+        const isParcelAction = actionType === "pickup"
+            || actionType === "putdown";
+        if (isParcelAction && outcome.status === "succeeded") {
+            beliefs.shareCurrentState();
+        }
         beliefs.crates.reconcileActionOutcome(outcome);
         const reconciliationResult = planner.reconcilePlanningOutcome(
             outcome,
@@ -203,21 +216,28 @@ export async function runAgentLoop(
             currentIntention = null;
         }
 
-        // The LLM only requests pickup or putdown. The normal BDI executor sends the
-        // action, beliefs are reconciled above, and the real outcome resolves the tool.
-        const externalActionFinished = settleActionObjective(
+        const actionObjectiveFinished = settleActionObjective(
             currentIntention,
             outcome,
             objectives
         );
+        const handoffAction = objectives?.reconcileActionOutcome(
+            currentIntention,
+            outcome
+        ) ?? { handled: false, terminal: false };
 
-        const actionType = outcome?.action?.action;
+        if (isParcelAction) beliefs.advanceSensingRevision();
+
         const isTerminalAction = actionType === "pickup"
             || actionType === "putdown";
 
         if (isTerminalAction) {
-            if (externalActionFinished) {
-                planner.resetPlanningState("external action finished");
+            if (actionObjectiveFinished || handoffAction.handled) {
+                planner.resetPlanningState(
+                    actionObjectiveFinished || handoffAction.terminal
+                        ? "external action finished"
+                        : "external objective phase advanced"
+                );
                 beliefs.partner.announceIntention(null);
             }
             currentIntention = null;
