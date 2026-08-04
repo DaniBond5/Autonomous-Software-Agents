@@ -4,17 +4,14 @@
 const MAX_PARCELS = 10;
 const MAX_DELIVERIES = 10;
 
-// A mission can run for ten turns, so five lines of history let it forget what
-// it did at the start and repeat it. Fifteen covers a whole mission at three
-// tool calls a turn, and the prompt is rebuilt from scratch against an endpoint
-// the whole course shares, so it does not pay to carry much more than that.
+// Keep enough recent events for one mission without growing every prompt.
 const MAX_RECENT_EVENTS = 15;
 
 const point = ({ x, y }) => `(${x},${y})`;
 
 /**
  * Describes the world in the few lines the model needs to act.
- * It is rebuilt by the context builder, so every model turn reads the current
+ * It is rebuilt by the context builder, so every model step reads the current
  * picture of the game.
  * @param {import("../bdi/beliefs.js").Beliefs} beliefs
  * @returns {string}
@@ -60,8 +57,8 @@ export function describeState(beliefs) {
 }
 
 /**
- * The working memory of the LLM agent: current goal, recent events and one
- * pending replan reason. It is rebuilt into a prompt on every turn rather
+ * The working memory of the LLM agent: current goal and recent events.
+ * It is rebuilt into a prompt on every step rather
  * than accumulated, so the context stays the same size all game long.
  */
 export class LLMMemory {
@@ -76,9 +73,6 @@ export class LLMMemory {
 
         /** @type {string[]} */
         this.history = [];
-
-        /** @type {string | null} */
-        this.pendingReplanReason = null;
     }
 
     /**
@@ -88,7 +82,6 @@ export class LLMMemory {
     startMission(goal) {
         this.goal = goal;
         this.history = [];
-        this.pendingReplanReason = null;
         this.remember(`new goal: ${goal}`);
     }
 
@@ -96,28 +89,6 @@ export class LLMMemory {
     finishMission() {
         this.goal = "";
         this.history = [];
-        this.pendingReplanReason = null;
-    }
-
-    /**
-     * Stores the first valid semantic failure that has not been handled yet.
-     * @param {string} reason
-     */
-    requestReplan(reason) {
-        if (typeof reason !== "string" || !reason.trim()) return;
-        if (this.pendingReplanReason === null) {
-            this.pendingReplanReason = reason.trim();
-        }
-    }
-
-    /**
-     * Returns one pending reason and removes it from memory.
-     * @returns {string | null}
-     */
-    takeReplanReason() {
-        const reason = this.pendingReplanReason;
-        this.pendingReplanReason = null;
-        return reason;
     }
 
     /**
@@ -132,7 +103,7 @@ export class LLMMemory {
     }
 
     /**
-     * Builds the compact state description sent to the model each turn.
+     * Builds the compact state description sent to the model each step.
      * @returns {string}
      */
     buildContext() {

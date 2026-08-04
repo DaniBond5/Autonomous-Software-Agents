@@ -1,15 +1,3 @@
-import { wait } from "../bdi/loop.js";
-
-// A turn is several calls to the model. Starting the next one immediately
-// would hammer the endpoint for a game that has barely moved in between.
-const MIN_TURN_INTERVAL_MS = 1000;
-
-const MAX_TURNS_PER_MISSION = 10;
-const MAX_UNREACHABLE_TURNS = 3;
-
-const COMPLETED_FALLBACK = "Mission completed.";
-const MAX_TURNS_MESSAGE = "Mission stopped: maximum number of LLM turns reached.";
-const UNREACHABLE_MESSAGE = "Mission stopped: the language model could not be reached.";
 const INTERNAL_ERROR_MESSAGE = "Mission stopped because of an internal error.";
 const BUSY_MESSAGE = "Busy: another mission is already running.";
 
@@ -28,7 +16,6 @@ export class LLMAgent {
         this.executor = executor;
 
         this.busy = false;
-        this.lastTurnAt = 0;
     }
 
     /**
@@ -61,7 +48,11 @@ export class LLMAgent {
                 const missionGoal = goal.trim();
                 console.log(`[llm] mission: ${missionGoal}`);
                 this.memory.startMission(missionGoal);
-                const result = await this.runMissionTurns();
+                const result = await this.planner.runMission(
+                    this.memory,
+                    this.executor,
+                    this.replanner
+                );
                 response = result.answer;
                 cleanupReason = result.completed
                     ? "mission finished"
@@ -88,51 +79,5 @@ export class LLMAgent {
             }
             this.busy = false;
         }
-    }
-
-    /** Waits out the gap between two turns. */
-    async cooldown() {
-        const elapsed = Date.now() - this.lastTurnAt;
-        if (elapsed < MIN_TURN_INTERVAL_MS) await wait(MIN_TURN_INTERVAL_MS - elapsed);
-        this.lastTurnAt = Date.now();
-    }
-
-    /**
-     * Runs bounded turns until the model returns a final answer.
-     * @returns {Promise<{answer: string, completed: boolean}>}
-     */
-    async runMissionTurns() {
-        let turns = 0;
-        let unreachableTurns = 0;
-
-        while (turns < MAX_TURNS_PER_MISSION) {
-            await this.cooldown();
-            turns += 1;
-
-            const reason = this.replanner.shouldReplan(this.memory);
-            const outcome = reason
-                ? await this.replanner.replan(
-                    this.memory, this.planner, this.executor, reason
-                )
-                : await this.planner.runTurn(this.memory, this.executor);
-
-            if (outcome.status === "unreachable") {
-                unreachableTurns += 1;
-                if (unreachableTurns >= MAX_UNREACHABLE_TURNS) {
-                    return { answer: UNREACHABLE_MESSAGE, completed: false };
-                }
-                continue;
-            }
-
-            unreachableTurns = 0;
-            if (outcome.status === "answered") {
-                return {
-                    answer: outcome.answer || COMPLETED_FALLBACK,
-                    completed: true,
-                };
-            }
-        }
-
-        return { answer: MAX_TURNS_MESSAGE, completed: false };
     }
 }

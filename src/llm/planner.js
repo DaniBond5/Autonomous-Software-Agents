@@ -6,19 +6,18 @@ const dbg = (...args) => {
     if (config.debug) console.log("[llm]", ...args);
 };
 
-// A turn is short on purpose. The mission is not lost when it ends: the agent
-// starts another turn right after, with the world as it is by then. A long
-// turn would only make the agent slow to notice that the game moved.
-const MAX_ITERATIONS = 3;
-
-// Two calls per iteration at most: one, then one more after the model has been
-// reminded of the format. Beyond that the iteration is spent.
-const MAX_ATTEMPTS = 2;
+const MAX_STEPS = 10;
 
 // The endpoint is shared with the rest of the course, so a failure is often
-// temporary. After this many in a row the turn ends instead of insisting.
+// temporary. After this many in a row the mission stops instead of insisting.
 const MAX_API_FAILURES = 3;
 const API_RETRY_MS = 1000;
+
+const COMPLETED_FALLBACK = "Mission completed.";
+const MAX_STEPS_MESSAGE =
+    "Mission stopped: maximum number of LLM turns reached.";
+const UNREACHABLE_MESSAGE =
+    "Mission stopped: the language model could not be reached.";
 
 const FORMAT_REMINDER = "Your last message was not in the required format. "
     + "Answer with Thought and then either Action plus Action Input, or "
@@ -30,13 +29,6 @@ const FINAL_ANSWER = /^[ \t]*Final Answer[ \t]*:[ \t]*([\s\S]*)$/m;
 
 /**
  * @typedef {{action: string, input: string} | {action: null, answer: string}} Step
- */
-
-/**
- * How a turn ended. A final answer carries the text that closes the mission.
- * @typedef {{status: 'acted'}
- *          | {status: 'answered', answer: string}
- *          | {status: 'unreachable'}} TurnOutcome
  */
 
 /**
@@ -63,7 +55,7 @@ export function parseStep(text) {
 }
 
 /**
- * The ReAct loop: the model thinks, calls a tool, reads what happened and
+ * The LLM execution loop: the model thinks, calls a tool, reads what happened and
  * thinks again. The format is plain text rather than the tool calling of the
  * API, so the agent works with any model behind the endpoint.
  */
@@ -86,77 +78,62 @@ export class LLMPlanner {
                 return await this.client.complete(messages);
             } catch (error) {
                 console.warn(`[llm] model call failed: ${error.message}`);
-                await wait(API_RETRY_MS);
+                if (failures + 1 < MAX_API_FAILURES) await wait(API_RETRY_MS);
             }
         }
         return null;
     }
 
     /**
-     * Runs one turn on the current goal.
-     * The way a turn ended is returned rather than logged and forgotten, because a mission
-     * that never finishes is ended by counting these: see the caller in core.js.
+     * Runs one mission through a bounded sequence of live LLM steps.
      * @param {import("./memory.js").LLMMemory} memory
      * @param {import("./executor.js").LLMExecutor} executor
-     * @returns {Promise<TurnOutcome>}
+     * @param {import("./replanner.js").LLMReplanner} replanner
+     * @returns {Promise<{answer: string, completed: boolean}>}
      */
-    async runTurn(memory, executor) {
-        const messages = [
-            { role: "system", content: buildSystemPrompt(executor) },
-            { role: "user", content: memory.buildContext() },
-        ];
+    async runMission(memory, executor, replanner) {
+        for (let stepNumber = 0; stepNumber < MAX_STEPS; stepNumber += 1) {
+            const messages = [
+                { role: "system", content: buildSystemPrompt(executor) },
+                { role: "user", content: memory.buildContext() },
+            ];
+            const answer = await this.ask(messages);
+            if (answer === null) {
+                return { answer: UNREACHABLE_MESSAGE, completed: false };
+            }
 
-        for (let iteration = 0; iteration < MAX_ITERATIONS; iteration += 1) {
-            for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-                const answer = await this.ask(messages);
-                if (answer === null) {
-                    console.warn("[llm] turn ended: the model could not be reached");
-                    return { status: "unreachable" };
-                }
-                messages.push({ role: "assistant", content: answer });
+            const parsed = parseStep(answer);
+            if (!parsed) {
+                dbg("reply in the wrong format");
+                memory.remember(FORMAT_REMINDER);
+                continue;
+            }
+            if (parsed.action === null) {
+                const finalAnswer = parsed.answer.trim() || COMPLETED_FALLBACK;
+                dbg(`final answer: ${finalAnswer}`);
+                memory.remember(`concluded: ${finalAnswer}`);
+                return { answer: finalAnswer, completed: true };
+            }
 
-                const step = parseStep(answer);
-                if (!step) {
-                    dbg("reply in the wrong format: reminding the model");
-                    messages.push({ role: "user", content: FORMAT_REMINDER });
-                    continue;
-                }
-                if (step.action === null) {
-                    dbg(`final answer: ${step.answer}`);
-                    memory.remember(`concluded: ${step.answer}`);
-                    return { status: "answered", answer: step.answer };
-                }
-
-                /** @type {import("./executor.js").ToolExecutionResult} */
-                const result = await executor.run(step.action, step.input);
-                const validSuccess = result?.ok === true
-                    && result.replanReason === null;
-                const validFailure = result?.ok === false
-                    && typeof result.replanReason === "string"
-                    && Boolean(result.replanReason.trim());
-                if ((!validSuccess && !validFailure)
-                    || typeof result?.observation !== "string"
-                    || !result.observation.trim()) {
-                    throw new TypeError("executor returned an invalid tool result");
-                }
-
-                dbg(`observation: ${result.observation}`);
-                // The model sees only the observation. A separate reason tells the
-                // replanner why the previous step cannot continue.
+            const result = await executor.run(parsed.action, parsed.input);
+            dbg(`observation: ${result.observation}`);
+            if (result.replanReason === null) {
+                const tool = parsed.input
+                    ? `${parsed.action} ${parsed.input}`
+                    : parsed.action;
                 memory.remember(
-                    `${step.action} ${step.input} -> ${result.observation}`
+                    `${tool} -> ${result.observation}`
                 );
-                messages.push({
-                    role: "user",
-                    content: `Observation: ${result.observation}`,
-                });
-                if (result.replanReason) {
-                    memory.requestReplan(result.replanReason);
-                    return { status: "acted" };
-                }
-                break;
+            } else if (typeof result.replanReason === "string") {
+                replanner.replan(
+                    memory,
+                    parsed.action,
+                    parsed.input,
+                    result.observation,
+                    result.replanReason
+                );
             }
         }
-        return { status: "acted" };
+        return { answer: MAX_STEPS_MESSAGE, completed: false };
     }
 }
