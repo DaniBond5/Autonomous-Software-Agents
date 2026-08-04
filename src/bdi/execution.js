@@ -45,6 +45,8 @@ export async function executeAction(action, beliefs, socket) {
             catch (error) {
                 return sdkFailure(action, error, beliefs);
             }
+            // TEMP diagnostic: action result shape.
+            dbg(beliefs, `pickup result=${JSON.stringify(result)}`);
             if (!Array.isArray(result) || result.length === 0) {
                 dbg(beliefs, 'pickup failed: no parcels');
                 return { status: 'failed', action, result };

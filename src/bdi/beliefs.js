@@ -100,6 +100,30 @@ class Me {
     }
 }
 
+/**
+ * Action results are not shaped like sensed parcels: the position can arrive
+ * nested under `xy`, and the id can be missing entirely.
+ * @returns {object | null} the entry with a flat position, or null if unusable
+ */
+export function normalizeActionResultEntry(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+
+    const { xy, id, x, y, ...rest } = raw;
+    // A present `xy` decides the position on its own, malformed or not.
+    const position = xy !== undefined ? xy : { x, y };
+    const entry = { ...rest };
+
+    // Leaving x and y out lets isFinitePosition reject the entry downstream.
+    if (isFinitePosition(position)) {
+        entry.x = Number(position.x);
+        entry.y = Number(position.y);
+    }
+    // Never invent an id the server did not send.
+    if (typeof id === 'string' && id.trim()) entry.id = id.trim();
+
+    return entry;
+}
+
 class Parcels {
     constructor() {
         /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel>} */
@@ -173,7 +197,8 @@ class Parcels {
             || !Array.isArray(outcome.result)) return;
 
         if (actionType === 'putdown') {
-            for (const resultParcel of outcome.result) {
+            for (const rawParcel of outcome.result) {
+                const resultParcel = normalizeActionResultEntry(rawParcel);
                 if (typeof resultParcel?.id !== 'string') continue;
                 const id = resultParcel.id;
                 const carriedParcel = this.carried.get(id);
@@ -201,8 +226,9 @@ class Parcels {
             return;
         }
 
-        for (const resultParcel of outcome.result) {
-            if (!resultParcel || typeof resultParcel !== 'object' || typeof resultParcel.id !== 'string') continue;
+        for (const rawParcel of outcome.result) {
+            const resultParcel = normalizeActionResultEntry(rawParcel);
+            if (!resultParcel || typeof resultParcel.id !== 'string') continue;
 
             const id = resultParcel.id;
             const storedParcel = this.visible.get(id)

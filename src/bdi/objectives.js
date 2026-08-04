@@ -1,5 +1,6 @@
 import config from "../config.js";
 import { trace } from "../utils/trace.js";
+import { normalizeActionResultEntry } from "./beliefs.js";
 
 // TEMP diagnostic: handoff putdown mismatch.
 const dbg = (...args) => {
@@ -80,8 +81,35 @@ function normalizeHandoffObjective(raw) {
     };
 }
 
-const resultHasParcel = (result, parcelId) => Array.isArray(result)
-    && result.some(parcel => nonEmptyString(parcel?.id) === parcelId);
+// A targeted putdown moves exactly one parcel, so where it landed identifies
+// it when the server answers without ids.
+const putdownMatchesPosition = (entries, currentPosition) =>
+    entries.length === 1
+    && isIntegerPoint(currentPosition)
+    && samePosition(entries[0], currentPosition)
+    && !entries[0].carriedBy;
+
+const resultHasParcel = (result, parcelId, actionType, currentPosition) => {
+    if (!Array.isArray(result)) return false;
+
+    const entries = result
+        .map(normalizeActionResultEntry)
+        .filter(entry => entry !== null);
+    const identified = entries.filter(entry => entry.id !== undefined);
+    if (identified.length > 0) {
+        return identified.some(entry => entry.id === parcelId);
+    }
+    if (actionType !== "putdown"
+        || !putdownMatchesPosition(entries, currentPosition)) {
+        return false;
+    }
+
+    trace("objective", "putdown-by-position", {
+        parcel: parcelId,
+        at: `${currentPosition.x},${currentPosition.y}`
+    });
+    return true;
+};
 
 const actionFailureReason = (outcome, fallback) => {
     if (outcome?.error instanceof Error) return outcome.error.message;
@@ -325,7 +353,7 @@ export class ObjectiveStore {
         return false;
     }
 
-    reconcileAction(intention, outcome) {
+    reconcileAction(intention, outcome, currentPosition) {
         const objective = this.activeObjective();
         const objectiveId = intention?.objectiveId;
         const actionType = outcome?.action?.action;
@@ -338,7 +366,9 @@ export class ObjectiveStore {
         }
 
         if (objective.type === "handoff") {
-            return this._reconcileHandoff(objective, actionType, outcome);
+            return this._reconcileHandoff(
+                objective, actionType, outcome, currentPosition
+            );
         }
 
         const expectedAction = objective.type === "pick_up_here"
@@ -372,7 +402,7 @@ export class ObjectiveStore {
         return true;
     }
 
-    _reconcileHandoff(objective, actionType, outcome) {
+    _reconcileHandoff(objective, actionType, outcome, currentPosition) {
         const expectedAction = objective.role === "giver"
             ? { pickup: "pickup", drop: "putdown", exit: null }[objective.phase]
             : { wait: "pickup", deliver: "putdown" }[objective.phase];
@@ -393,7 +423,12 @@ export class ObjectiveStore {
             return true;
         }
         if (outcome.status !== "succeeded"
-            || !resultHasParcel(outcome.result, objective.parcelId)) {
+            || !resultHasParcel(
+                outcome.result,
+                objective.parcelId,
+                actionType,
+                currentPosition
+            )) {
             // TEMP diagnostic: an id mismatch and a missing parcel look alike here.
             dbg(
                 `handoff ${actionType} rejected expected=${objective.parcelId}`

@@ -121,7 +121,8 @@ export async function runAgentLoop(
         );
         const resetFromAction = objectives?.reconcileAction(
             currentIntention,
-            outcome
+            outcome,
+            beliefs.me.pos
         ) ?? false;
 
         const isTerminalAction = actionType === "pickup"
