@@ -35,6 +35,8 @@ function normalizeHandoffObjective(raw) {
         || giverId === receiverId
         || !role
         || points.some(point => !isIntegerPoint(point))
+        || !areAdjacent(raw.parcelStart, raw.handoffTile)
+        || samePosition(raw.parcelStart, raw.waitTile)
         || samePosition(raw.waitTile, raw.exitTile)
         || !areAdjacent(raw.handoffTile, raw.waitTile)
         || !areAdjacent(raw.handoffTile, raw.exitTile)

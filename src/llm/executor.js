@@ -16,7 +16,7 @@ const dbg = (...args) => {
 const success = text => ({ ok: true, text });
 const failure = text => ({ ok: false, text });
 
-const RENDEZVOUS_POLL_MS = 100;
+const COORDINATION_POLL_MS = 100;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
@@ -37,10 +37,6 @@ const compareTiles = (first, second) =>
     first.x - second.x || first.y - second.y;
 const compareStrings = (first, second) =>
     first < second ? -1 : first > second ? 1 : 0;
-const compareHandoffCandidates = (first, second) =>
-    first.cost - second.cost
-    || compareStrings(first.parcel.id, second.parcel.id)
-    || compareTiles(first.handoffTile, second.handoffTile);
 const CARDINAL_STEPS = [
     { x: 1, y: 0 },
     { x: -1, y: 0 },
@@ -71,15 +67,13 @@ const adjacentTiles = (beliefs, center) => CARDINAL_STEPS
     .map(copyPoint);
 
 function selectHandoffConfiguration(beliefs) {
-    const isBlockedByCrate = position => beliefs.crates.isOccupied(position);
-    const pathOptions = { isBlocked: isBlockedByCrate };
+    const pathOptions = { isBlocked: position => beliefs.crates.isOccupied(position) };
     const giverPaths = shortestPathsFrom(beliefs, beliefs.me.pos, pathOptions);
     const receiverPaths = shortestPathsFrom(
-        beliefs,
-        beliefs.partner.state,
-        pathOptions
+        beliefs, beliefs.partner.state, pathOptions
     );
     const freeParcels = freeKnownParcels(beliefs);
+    const occupiedByFreeParcel = new Set(freeParcels.map(tileKey));
     const parcels = freeParcels
         .map(parcel => ({
             parcel,
@@ -94,14 +88,12 @@ function selectHandoffConfiguration(beliefs) {
             first.giverPickupDistance - second.giverPickupDistance
             || compareStrings(first.parcel.id, second.parcel.id)
         );
-    const occupiedByFreeParcel = new Set(freeParcels.map(tileKey));
-    const configurations = [];
 
     for (const { parcel, giverPickupDistance } of parcels) {
-        let parcelConfiguration = null;
-        const handoffTiles = adjacentTiles(beliefs, parcel)
+        const parcelStart = copyPoint(parcel);
+        const handoffTiles = adjacentTiles(beliefs, parcelStart)
             .filter(tile => isPositionTraversable(beliefs, tile)
-                && isMoveAllowed(beliefs, parcel, tile)
+                && isMoveAllowed(beliefs, parcelStart, tile)
                 && !beliefs.world.deliveries.has(tileKey(tile))
                 && !beliefs.world.spawners.has(tileKey(tile))
                 && !beliefs.world.isCrateSpace(tile)
@@ -117,13 +109,13 @@ function selectHandoffConfiguration(beliefs) {
                     && !beliefs.rules.isAvoided(tile))
                 .sort(compareTiles);
             const wait = neighbors
-                .filter(tile => !samePosition(tile, parcel)
-                    && isMoveAllowed(beliefs, tile, handoffTile)
-                    && Number.isFinite(distanceFromSearch(receiverPaths, tile)))
                 .map(tile => ({
                     tile,
                     distance: distanceFromSearch(receiverPaths, tile),
                 }))
+                .filter(candidate => !samePosition(candidate.tile, parcelStart)
+                    && Number.isFinite(candidate.distance)
+                    && isMoveAllowed(beliefs, candidate.tile, handoffTile))
                 .sort((first, second) =>
                     first.distance - second.distance
                     || compareTiles(first.tile, second.tile)
@@ -157,30 +149,23 @@ function selectHandoffConfiguration(beliefs) {
             )[0];
             if (!selectedDelivery) continue;
 
-            const giverHandoffDistance = 1;
-            const cost = giverPickupDistance
-                + giverHandoffDistance
-                + wait.distance
-                + selectedDelivery.distance;
-            const candidate = {
+            return {
                 parcel: { id: parcel.id, x: parcel.x, y: parcel.y },
-                handoffTile,
-                waitTile: wait.tile,
-                exitTile,
+                parcelStart,
+                handoffTile: copyPoint(handoffTile),
+                waitTile: copyPoint(wait.tile),
+                exitTile: copyPoint(exitTile),
                 deliveryTile: copyPoint(selectedDelivery.delivery),
-                cost,
+                estimatedMoves: giverPickupDistance
+                    + 1
+                    + wait.distance
+                    + selectedDelivery.distance
+                    + 4,
             };
-            if (!parcelConfiguration
-                || compareHandoffCandidates(candidate, parcelConfiguration) < 0) {
-                parcelConfiguration = candidate;
-            }
         }
-
-        if (parcelConfiguration) configurations.push(parcelConfiguration);
     }
 
-    configurations.sort(compareHandoffCandidates);
-    return configurations[0] ?? null;
+    return null;
 }
 
 function selectRendezvousTargets(beliefs, center, radius) {
@@ -494,7 +479,7 @@ export class LLMExecutor {
 
             const remainingMs = deadline - Date.now();
             if (remainingMs > 0) {
-                await sleep(Math.min(RENDEZVOUS_POLL_MS, remainingMs));
+                await sleep(Math.min(COORDINATION_POLL_MS, remainingMs));
             }
         }
 
@@ -607,43 +592,43 @@ export class LLMExecutor {
         }
     }
 
-    async waitForHandoff(configuration, giverCompletion, deadline) {
+    async waitForHandoff(giverCompletion, receiverObjectiveId, parcelId, deadline) {
         let giverResult = null;
-        let receiverPicked = false;
-        const parcelId = configuration.parcel.id;
-        let revision = this.beliefs.sensingRevision;
 
         void giverCompletion.then(result => {
             giverResult = result;
-            this.beliefs.advanceSensingRevision();
         });
 
         while (Date.now() < deadline) {
-            const partnerState = this.beliefs.partner.state;
-            const partnerCarries = Array.isArray(partnerState?.carriedParcelIds)
-                && partnerState.carriedParcelIds.includes(parcelId);
-            if (partnerCarries) receiverPicked = true;
-
             if (giverResult?.status === "failed"
                 || giverResult?.status === "cancelled") {
                 return failure(
                     `Parcel handoff failed: ${giverResult.reason || "the giver objective stopped"}.`
                 );
             }
-            if (giverResult?.status === "succeeded"
-                && receiverPicked
-                && !partnerCarries
-                && samePosition(partnerState, configuration.deliveryTile)) {
-                return success(
-                    `Parcel handoff completed: the teammate delivered parcel ${parcelId} `
-                    + "after receiving it from this agent."
-                );
+
+            const receiverResult = this.beliefs.partner.handoffResult;
+            if (receiverResult?.id === receiverObjectiveId) {
+                if (receiverResult.status === "succeeded"
+                    && giverResult?.status === "succeeded") {
+                    return success(
+                        `Parcel handoff completed: the teammate delivered parcel ${parcelId} `
+                        + "after receiving it from this agent."
+                    );
+                }
+                if (receiverResult.status === "failed"
+                    || receiverResult.status === "cancelled") {
+                    return failure(
+                        `Parcel handoff failed: ${receiverResult.reason
+                            || "the receiver objective stopped"}.`
+                    );
+                }
             }
 
             const remainingMs = deadline - Date.now();
-            if (remainingMs <= 0) break;
-            await this.beliefs.waitForSensingAfter(revision, remainingMs);
-            revision = this.beliefs.sensingRevision;
+            if (remainingMs > 0) {
+                await sleep(Math.min(COORDINATION_POLL_MS, remainingMs));
+            }
         }
 
         return failure(
@@ -668,7 +653,7 @@ export class LLMExecutor {
             || !this.beliefs.partner.id?.trim()
             || !isIntegerPosition(this.beliefs.me.pos)
             || !isIntegerPosition(this.beliefs.partner.state)
-            || !Array.isArray(this.beliefs.partner.state?.carriedParcelIds)) {
+            || world.tiles.size === 0) {
             return failure(
                 "Cannot start parcel handoff: the live map or agent state is unavailable."
             );
@@ -681,8 +666,9 @@ export class LLMExecutor {
             );
         }
 
-        const estimatedMoves = configuration.cost + 4;
-        const timeoutMoves = estimatedMoves + world.width + world.height;
+        const timeoutMoves = configuration.estimatedMoves
+            + world.width
+            + world.height;
         const timeoutMs = timeoutMoves * world.movementDurationMs();
         const startedAt = Date.now();
         const deadline = startedAt + timeoutMs;
@@ -694,7 +680,7 @@ export class LLMExecutor {
             parcelId: configuration.parcel.id,
             giverId: this.beliefs.me.id,
             receiverId: this.beliefs.partner.id,
-            parcelStart: copyPoint(configuration.parcel),
+            parcelStart: configuration.parcelStart,
             handoffTile: configuration.handoffTile,
             waitTile: configuration.waitTile,
             exitTile: configuration.exitTile,
@@ -708,29 +694,35 @@ export class LLMExecutor {
             ...sharedFields, id: receiverObjectiveId, role: "receiver"
         };
 
+        let completion;
         try {
-            // The LLM only requests the action. Both BDI loops execute it.
-            const { completion } = this.objectives.request(
+            ({ completion } = this.objectives.request(
                 "handoff",
                 giverObjective
+            ));
+        } catch (error) {
+            return failure(
+                `Cannot start parcel handoff: ${error instanceof Error
+                    ? error.message
+                    : "invalid local objective"}.`
             );
+        }
+
+        try {
+            // The LLM only requests the action. Both BDI loops execute it.
             this.beliefs.partner.shareHandoff(receiverObjective);
             return await this.waitForHandoff(
-                configuration,
                 completion,
+                receiverObjectiveId,
+                configuration.parcel.id,
                 deadline
-            );
-        } catch (error) {
-            console.error("[llm] parcel handoff coordination failed:", error);
-            return failure(
-                "Parcel handoff failed because coordination could not be completed."
             );
         } finally {
             this.objectives.clear(giverObjectiveId, "parcel handoff cleanup");
             try {
                 this.beliefs.partner.shareHandoffClear(receiverObjectiveId);
             } catch (error) {
-                console.warn("[llm] parcel handoff cleanup message failed:", error);
+                dbg("parcel handoff cleanup message failed", error);
             }
         }
     }

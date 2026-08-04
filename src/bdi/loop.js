@@ -124,8 +124,6 @@ export async function runAgentLoop(
             outcome
         ) ?? false;
 
-        if (isParcelAction) beliefs.advanceSensingRevision();
-
         const isTerminalAction = actionType === "pickup"
             || actionType === "putdown";
 

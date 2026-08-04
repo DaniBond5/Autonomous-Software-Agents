@@ -556,33 +556,16 @@ class Agents {
  * It costs one field and means a later protocol can be told apart from this one instead of guessed at.
 */
 const PROTOCOL_VERSION = 1;
+const HANDOFF_RESULT_STATUSES = new Set([
+    'succeeded', 'failed', 'cancelled'
+]);
 
-function normalizeCarriedParcelIds(ids) {
-    if (!Array.isArray(ids)) return null;
-    const normalized = new Set();
-    for (const id of ids) {
-        if (typeof id !== 'string' || !id.trim()) return null;
-        normalized.add(id.trim());
-    }
-    return [...normalized].sort((first, second) =>
-        first < second ? -1 : first > second ? 1 : 0
-    );
-}
-
-/**
- * Validates and copies the small state report shared between partners.
- * @param {*} state
- * @returns {{x: number, y: number, carriedCount: number, carriedReward: number,
- *            carriedParcelIds: string[]} | null}
- */
 function normalizePartnerState(state) {
-    const carriedParcelIds = normalizeCarriedParcelIds(state?.carriedParcelIds);
     if (!isFinitePosition(state)
         || !Number.isInteger(state.carriedCount)
         || state.carriedCount < 0
         || !Number.isFinite(state.carriedReward)
-        || state.carriedReward < 0
-        || carriedParcelIds === null) {
+        || state.carriedReward < 0) {
         return null;
     }
 
@@ -590,8 +573,17 @@ function normalizePartnerState(state) {
         x: Number(state.x),
         y: Number(state.y),
         carriedCount: state.carriedCount,
-        carriedReward: Number(state.carriedReward),
-        carriedParcelIds
+        carriedReward: Number(state.carriedReward)
+    };
+}
+
+function normalizeHandoffResult(id, status, reason) {
+    const normalizedId = typeof id === 'string' ? id.trim() : '';
+    if (!normalizedId || !HANDOFF_RESULT_STATUSES.has(status)) return null;
+    return {
+        id: normalizedId,
+        status,
+        reason: String(reason ?? '')
     };
 }
 
@@ -616,20 +608,12 @@ class Partner {
         */
         this.id = null;
 
-        /**
-         * The last valid state reported by the partner. receivedAt uses this agent's clock.
-         * @type {{x: number, y: number, carriedCount: number, carriedReward: number,
-         *         carriedParcelIds: string[],
-         *         receivedAt: number} | null}
-        */
         this.state = null;
 
-        /**
-         * This agent's latest valid state, kept so a newly connected partner receives it.
-         * @type {{x: number, y: number, carriedCount: number, carriedReward: number,
-         *         carriedParcelIds: string[]} | null}
-        */
         this.myState = null;
+
+        /** @type {{id: string, status: string, reason: string} | null} */
+        this.handoffResult = null;
 
         /** @type {string | null} */
         this.sharedStateFingerprint = null;
@@ -659,17 +643,10 @@ class Partner {
         this.socket = null;
     }
 
-    /**
-     * @returns {boolean} true when the partner's id has been resolved.
-    */
     get isKnown() {
         return this.id !== null;
     }
 
-    /**
-     * This function records the partner's id, which the launcher knows because it built both.
-     * @param {string} id
-    */
     connected(id) {
         this.id = id;
         console.log(`[${this.me.name || "agent"}] partner is agent ${id}`);
@@ -688,11 +665,6 @@ class Partner {
         });
     }
 
-    /**
-     * This function forgets the partner when it leaves the game.
-     * Nothing calls it now that the launcher hands over both ids at startup and neither agent
-     * outlives the other. It stays because it is the right answer if one ever does.
-    */
     disconnected() {
         console.log(`[${this.me.name || "agent"}] partner disconnected`);
         this.id = null;
@@ -703,10 +675,6 @@ class Partner {
         this.claim = null;
     }
 
-    /**
-     * Records the partner's last valid report and timestamps it on receipt.
-     * @returns {boolean} whether the report was accepted
-     */
     setState(state) {
         const normalized = normalizePartnerState(state);
         if (!normalized) return false;
@@ -714,10 +682,17 @@ class Partner {
         return true;
     }
 
-    /**
-     * Saves this agent's current state and shares it only when its values changed.
-     * @param {*} state
-    */
+    setHandoffResult(result) {
+        const normalized = normalizeHandoffResult(
+            result?.id,
+            result?.status,
+            result?.reason
+        );
+        if (!normalized) return false;
+        this.handoffResult = normalized;
+        return true;
+    }
+
     shareState(state) {
         const normalized = normalizePartnerState(state);
         if (!normalized) return;
@@ -725,13 +700,12 @@ class Partner {
         this.sendCurrentState();
     }
 
-    /** Sends the saved local state once per distinct value. */
     sendCurrentState() {
         if (!this.isKnown || !this.myState) return;
 
         const state = this.myState;
         const fingerprint = `${state.x},${state.y},${state.carriedCount},`
-            + `${state.carriedReward},${JSON.stringify(state.carriedParcelIds)}`;
+            + `${state.carriedReward}`;
         if (fingerprint === this.sharedStateFingerprint) return;
         this.sharedStateFingerprint = fingerprint;
 
@@ -818,6 +792,15 @@ class Partner {
 
     shareHandoff(objective) {
         this.send({ kind: 'handoff', objective });
+    }
+
+    shareHandoffResult(result) {
+        const normalized = normalizeHandoffResult(
+            result?.objectiveId,
+            result?.status,
+            result?.reason
+        );
+        if (normalized) this.send({ kind: 'handoff_result', ...normalized });
     }
 
     shareHandoffClear(id) {
@@ -1082,39 +1065,6 @@ export class Beliefs {
 
         // Desires and pathfinding read this same local strategy on every BDI cycle.
         this.rules = new RuleStore();
-
-        this.sensingRevision = 0;
-        this.sensingWaiters = new Set();
-    }
-
-    /** Wakes callers waiting for fresh local or partner state. */
-    advanceSensingRevision() {
-        this.sensingRevision += 1;
-        const waiters = [...this.sensingWaiters];
-        this.sensingWaiters.clear();
-        for (const finish of waiters) finish(true);
-    }
-
-    /** Waits for a later sensing revision or for the remaining deadline. */
-    waitForSensingAfter(revision, timeoutMs) {
-        if (this.sensingRevision > revision) return Promise.resolve(true);
-        if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-            return Promise.resolve(false);
-        }
-
-        return new Promise(resolve => {
-            let settled = false;
-            let timeoutId = null;
-            const finish = changed => {
-                if (settled) return;
-                settled = true;
-                this.sensingWaiters.delete(finish);
-                if (timeoutId !== null) clearTimeout(timeoutId);
-                resolve(changed);
-            };
-            this.sensingWaiters.add(finish);
-            timeoutId = setTimeout(() => finish(false), timeoutMs);
-        });
     }
 
     shareCurrentState() {
@@ -1126,8 +1076,7 @@ export class Beliefs {
             x: this.me.pos.x,
             y: this.me.pos.y,
             carriedCount: this.parcels.carried.size,
-            carriedReward: this.parcels.carriedScore(),
-            carriedParcelIds: [...this.parcels.carried.keys()]
+            carriedReward: this.parcels.carriedScore()
         });
     }
 
@@ -1141,7 +1090,6 @@ export class Beliefs {
         socket.onYou((payload) => {
             this.me.update(payload);
             this.shareCurrentState();
-            this.advanceSensingRevision();
         });
 
         socket.onSensing((sensing) => {
@@ -1166,7 +1114,6 @@ export class Beliefs {
                     parcel => !parcel.carriedBy && parcel.reward > 0
                 )
             );
-            this.advanceSensingRevision();
         });
 
         // Chat carries both partner messages and whatever a human types, so a message is only revised into
@@ -1181,9 +1128,7 @@ export class Beliefs {
             }
 
             if (message.kind === 'state') {
-                if (this.partner.setState(message)) {
-                    this.advanceSensingRevision();
-                }
+                this.partner.setState(message);
                 return;
             }
 
@@ -1202,19 +1147,16 @@ export class Beliefs {
                 if (!objectives) return;
                 try {
                     objectives.request("hold", message.hold);
-                    this.advanceSensingRevision();
                 } catch {}
                 return;
             }
 
             if (message.kind === 'hold_clear') {
                 if (typeof message.id === 'string' && message.id.trim()) {
-                    if (objectives?.clear(
+                    objectives?.clear(
                         message.id.trim(),
                         "hold cleared by partner"
-                    )) {
-                        this.advanceSensingRevision();
-                    }
+                    );
                 }
                 return;
             }
@@ -1228,20 +1170,29 @@ export class Beliefs {
                     || objective.receiverId !== this.me.id
                     || !objectives) return;
                 try {
-                    objectives.request("handoff", objective);
-                    this.advanceSensingRevision();
+                    const { completion } = objectives.request(
+                        "handoff",
+                        objective
+                    );
+                    // The receiver reports only the final result; this is not an ACK.
+                    void completion.then(result => {
+                        this.partner.shareHandoffResult(result);
+                    });
                 } catch {}
+                return;
+            }
+
+            if (message.kind === 'handoff_result') {
+                this.partner.setHandoffResult(message);
                 return;
             }
 
             if (message.kind === 'handoff_clear') {
                 if (typeof message.id === 'string' && message.id.trim()) {
-                    if (objectives?.clear(
+                    objectives?.clear(
                         message.id.trim(),
                         "handoff cleared by partner"
-                    )) {
-                        this.advanceSensingRevision();
-                    }
+                    );
                 }
                 return;
             }
