@@ -333,12 +333,7 @@ function parseHold(input) {
     return hold.seconds > 0 ? hold : null;
 }
 
-/**
- * The tools the model can call, and the only place they are described.
- * The system prompt is generated from this registry, so a new tool becomes
- * available to the model as soon as it is added here.
- * Every tool returns one success flag and one text for the next model step.
- */
+// Tool descriptions also feed the system prompt below.
 export class LLMExecutor {
     /**
      * @param {{beliefs: import("../bdi/beliefs.js").Beliefs,
@@ -480,11 +475,6 @@ export class LLMExecutor {
         }
     }
 
-    /**
-     * Publishes a tile objective and waits for the BDI loop to report its result.
-     * @param {string} input
-     * @returns {Promise<ToolExecutionResult>}
-     */
     async goTo(input) {
         const target = parseTile(input);
         if (!target) {
@@ -498,59 +488,28 @@ export class LLMExecutor {
         if (result.status === "succeeded") {
             return success(`Reached (${target.x},${target.y}).`);
         }
-        if (result.status === "failed") {
-            const reason = String(result.reason || "no path was found").trim();
-            return failure(`Cannot reach (${target.x},${target.y}): ${reason}`);
-        }
-        if (result.status === "cancelled") {
-            const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(
-                `Go-to (${target.x},${target.y}) was cancelled: ${reason}`
-            );
-        }
-        throw new TypeError("go_to received an unknown objective result");
+        const reason = String(result.reason || "the objective stopped").trim();
+        return failure(`Cannot reach (${target.x},${target.y}): ${reason}`);
     }
 
-    /**
-     * Requests one pickup and waits for the BDI loop to return the server result.
-     * @returns {Promise<ToolExecutionResult>}
-     */
     async pickUp() {
         const { completion } = this.objectives.requestPickup();
         const result = await completion;
         if (result.status === "succeeded") return success(result.reason);
-        if (result.status === "failed") {
-            const reason = String(result.reason || "pickup failed").trim();
-            return failure(
-                reason === "no parcels were picked up"
-                    ? "Pickup failed: there are no parcels on the current tile."
-                    : `Pickup failed: ${reason}`
-            );
-        }
-        if (result.status === "cancelled") {
-            const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(`Pickup was cancelled: ${reason}`);
-        }
-        throw new TypeError("pick_up received an unknown objective result");
+        const reason = String(result.reason || "the objective stopped").trim();
+        return failure(
+            reason === "no parcels were picked up"
+                ? "Pickup failed: there are no parcels on the current tile."
+                : `Pickup failed: ${reason}`
+        );
     }
 
-    /**
-     * Requests one putdown and waits for the BDI loop to return the server result.
-     * @returns {Promise<ToolExecutionResult>}
-     */
     async putDown() {
         const { completion } = this.objectives.requestPutdown();
         const result = await completion;
         if (result.status === "succeeded") return success(result.reason);
-        if (result.status === "failed") {
-            const reason = String(result.reason || "putdown failed").trim();
-            return failure(`Putdown failed: ${reason}`);
-        }
-        if (result.status === "cancelled") {
-            const reason = String(result.reason || "the objective was cancelled").trim();
-            return failure(`Putdown was cancelled: ${reason}`);
-        }
-        throw new TypeError("put_down received an unknown objective result");
+        const reason = String(result.reason || "the objective stopped").trim();
+        return failure(`Putdown failed: ${reason}`);
     }
 
     /** Parses one semantic tool input and sends it through the scoped strategy path. */

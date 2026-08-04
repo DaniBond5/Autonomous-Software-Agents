@@ -54,11 +54,6 @@ export function parseStep(text) {
     return null;
 }
 
-/**
- * The LLM execution loop: the model thinks, calls a tool, reads what happened and
- * thinks again. The format is plain text rather than the tool calling of the
- * API, so the agent works with any model behind the endpoint.
- */
 export class LLMPlanner {
     /**
      * @param {import("./client.js").LLMClient} client
@@ -85,7 +80,6 @@ export class LLMPlanner {
     }
 
     /**
-     * Runs one mission through a bounded sequence of live LLM steps.
      * @param {import("./memory.js").LLMMemory} memory
      * @param {import("./executor.js").LLMExecutor} executor
      * @param {import("./replanner.js").LLMReplanner} replanner
@@ -120,9 +114,9 @@ export class LLMPlanner {
             const toolCall = parsed.input
                 ? `${parsed.action} ${parsed.input}`
                 : parsed.action;
-            if (result.ok === true) {
+            if (result.ok) {
                 memory.remember(`${toolCall} -> ${result.text}`);
-            } else if (result.ok === false) {
+            } else {
                 replanner.replan(
                     memory,
                     parsed.action,
