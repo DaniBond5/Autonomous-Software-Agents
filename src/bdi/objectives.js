@@ -1,4 +1,10 @@
+import config from "../config.js";
 import { trace } from "../utils/trace.js";
+
+// TEMP diagnostic: handoff putdown mismatch.
+const dbg = (...args) => {
+    if (config.debug) console.log("[objective]", ...args);
+};
 
 // Temporary mission objectives outrank normal autonomous desires.
 const LLM_OBJECTIVE_UTILITY = 10_000;
@@ -388,6 +394,14 @@ export class ObjectiveStore {
         }
         if (outcome.status !== "succeeded"
             || !resultHasParcel(outcome.result, objective.parcelId)) {
+            // TEMP diagnostic: an id mismatch and a missing parcel look alike here.
+            dbg(
+                `handoff ${actionType} rejected expected=${objective.parcelId}`
+                + ` status=${outcome.status}`
+                + ` actual=${JSON.stringify(Array.isArray(outcome.result)
+                    ? outcome.result.map(parcel => parcel?.id)
+                    : outcome.result)}`
+            );
             this.settle(
                 objective.id,
                 "failed",

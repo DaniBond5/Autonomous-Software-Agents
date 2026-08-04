@@ -63,6 +63,13 @@ export async function executeAction(action, beliefs, socket) {
             catch (error) {
                 return sdkFailure(action, error, beliefs);
             }
+            // TEMP diagnostic: handoff putdown mismatch.
+            dbg(
+                beliefs,
+                `putdown requested=${typeof action.parcelId === 'string'
+                    ? action.parcelId
+                    : 'all'} result=${JSON.stringify(result)}`
+            );
             if (!Array.isArray(result) || result.length === 0) {
                 dbg(beliefs, 'putdown failed: no parcels');
                 return { status: 'failed', action, result };
