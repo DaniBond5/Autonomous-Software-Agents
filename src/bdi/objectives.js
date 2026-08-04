@@ -2,12 +2,69 @@
 export const LLM_OBJECTIVE_UTILITY = 10_000;
 
 const copyTarget = target => ({ x: target.x, y: target.y });
+const isObject = value => value !== null
+    && typeof value === "object"
+    && !Array.isArray(value);
+const isIntegerPoint = point =>
+    Number.isInteger(point?.x) && Number.isInteger(point?.y);
+const nonEmptyString = value =>
+    typeof value === "string" && value.trim() ? value.trim() : null;
+const areAdjacent = (first, second) =>
+    Math.abs(first.x - second.x) + Math.abs(first.y - second.y) === 1;
 
-/**
- * Stores the single physical objective currently requested by the LLM.
- * The LLM publishes it, the BDI loop consumes it, and the completion promise
- * carries the BDI result back to the waiting tool call.
- */
+export function normalizeHandoffObjective(raw) {
+    if (!isObject(raw) || raw.type !== "handoff") return null;
+
+    const id = nonEmptyString(raw.id);
+    const parcelId = nonEmptyString(raw.parcelId);
+    const giverId = nonEmptyString(raw.giverId);
+    const receiverId = nonEmptyString(raw.receiverId);
+    const role = raw.role === "giver" || raw.role === "receiver"
+        ? raw.role
+        : null;
+    const pointNames = [
+        "parcelStart", "handoffTile", "waitTile", "exitTile", "deliveryTile"
+    ];
+    const points = pointNames.map(name => raw[name]);
+
+    if (!id || !parcelId || !giverId || !receiverId
+        || giverId === receiverId
+        || !role
+        || points.some(point => !isIntegerPoint(point))
+        || (raw.waitTile.x === raw.exitTile.x
+            && raw.waitTile.y === raw.exitTile.y)
+        || !areAdjacent(raw.handoffTile, raw.waitTile)
+        || !areAdjacent(raw.handoffTile, raw.exitTile)
+        || !Number.isFinite(raw.expiresAt)
+        || raw.expiresAt <= Date.now()) {
+        return null;
+    }
+
+    return {
+        id,
+        type: "handoff",
+        role,
+        parcelId,
+        giverId,
+        receiverId,
+        parcelStart: copyTarget(raw.parcelStart),
+        handoffTile: copyTarget(raw.handoffTile),
+        waitTile: copyTarget(raw.waitTile),
+        exitTile: copyTarget(raw.exitTile),
+        deliveryTile: copyTarget(raw.deliveryTile),
+        expiresAt: raw.expiresAt,
+    };
+}
+
+const resultHasParcel = (result, parcelId) => Array.isArray(result)
+    && result.some(parcel => nonEmptyString(parcel?.id) === parcelId);
+
+const actionFailureReason = (outcome, fallback) => {
+    if (outcome?.error instanceof Error) return outcome.error.message;
+    if (outcome?.error != null) return String(outcome.error);
+    return fallback;
+};
+
 export class ObjectiveStore {
     constructor() {
         this.nextId = 1;
@@ -41,22 +98,31 @@ export class ObjectiveStore {
         return this._request("put_down_here");
     }
 
+    requestHandoff(raw) {
+        const normalized = normalizeHandoffObjective(raw);
+        if (!normalized) throw new TypeError("invalid handoff objective");
+        const { id, type, ...fields } = normalized;
+        return this._request(type, {
+            ...fields,
+            phase: normalized.role === "giver" ? "pickup" : "wait",
+        }, id);
+    }
+
     /**
      * @param {'go_to_tile'|'pick_up_here'|'put_down_here'} type
      * @param {object} [fields]
      * @returns {{objective: object, completion: Promise<object>}}
      */
-    _request(type, fields = {}) {
+    _request(type, fields = {}, id = `llm-objective-${this.nextId++}`) {
         this.cancelActive("replaced by a new objective");
 
         const objective = {
-            id: `llm-objective-${this.nextId++}`,
+            id,
             type,
             ...fields,
             utility: LLM_OBJECTIVE_UTILITY,
             status: "active",
         };
-
         let resolveCompletion;
         const completion = new Promise(resolve => {
             resolveCompletion = resolve;
@@ -65,52 +131,58 @@ export class ObjectiveStore {
         return { objective, completion };
     }
 
+    _expireActive() {
+        const objective = this.active?.objective;
+        if (objective?.type !== "handoff"
+            || objective.expiresAt > Date.now()) return;
+        this._settleActive("failed", "handoff deadline expired");
+    }
+
+    getActiveObjective() {
+        this._expireActive();
+        return this.active?.objective ?? null;
+    }
+
     /** @returns {import("./desires.js").Desire | null} */
     getActiveDesire() {
-        if (!this.active) return null;
-        const { objective } = this.active;
-        const desire = {
-            type: objective.type,
-            utility: objective.utility,
-            objectiveId: objective.id,
-        };
+        const objective = this.getActiveObjective();
+        if (!objective) return null;
+        const { id, status: _status, ...desire } = objective;
+        desire.objectiveId = id;
         if (objective.target) desire.target = copyTarget(objective.target);
         return desire;
     }
 
     /** @param {string} objectiveId */
     isActive(objectiveId) {
-        return this.active?.objective.id === objectiveId;
+        return this.getActiveObjective()?.id === objectiveId;
     }
 
-    /**
-     * @param {string} objectiveId
-     * @param {string} reason
-     */
+    clear(objectiveId, reason = "objective cleared") {
+        if (!this.isActive(objectiveId)) return false;
+        return this.cancel(objectiveId, reason);
+    }
+
+    /** @param {string} objectiveId @param {string} reason */
     complete(objectiveId, reason) {
         return this.settle(objectiveId, "succeeded", reason);
     }
 
-    /**
-     * @param {string} objectiveId
-     * @param {string} reason
-     */
+    /** @param {string} objectiveId @param {string} reason */
     fail(objectiveId, reason) {
         return this.settle(objectiveId, "failed", reason);
     }
 
-    /**
-     * @param {string} objectiveId
-     * @param {string} reason
-     */
+    /** @param {string} objectiveId @param {string} reason */
     cancel(objectiveId, reason) {
         return this.settle(objectiveId, "cancelled", reason);
     }
 
     /** @param {string} reason */
     cancelActive(reason) {
-        if (!this.active) return false;
-        return this.cancel(this.active.objective.id, reason);
+        const objective = this.getActiveObjective();
+        if (!objective) return false;
+        return this.cancel(objective.id, reason);
     }
 
     /**
@@ -119,12 +191,69 @@ export class ObjectiveStore {
      * @param {string} reason
      */
     settle(objectiveId, status, reason) {
-        if (!this.isActive(objectiveId)) return false;
+        this._expireActive();
+        if (this.active?.objective.id !== objectiveId) return false;
+        return this._settleActive(status, reason);
+    }
 
+    _settleActive(status, reason) {
+        if (!this.active) return false;
         const entry = this.active;
         this.active = null;
         entry.objective.status = status;
-        entry.resolve({ objectiveId, status, reason: String(reason ?? "") });
+        entry.resolve({
+            objectiveId: entry.objective.id,
+            status,
+            reason: String(reason ?? ""),
+        });
         return true;
+    }
+
+    reconcileActionOutcome(intention, outcome) {
+        const objectiveId = intention?.objectiveId;
+        const objective = this.getActiveObjective();
+        const actionType = outcome?.action?.action;
+        if (!objectiveId || objective?.id !== objectiveId
+            || outcome?.action?.objectiveId !== objectiveId
+            || intention.type !== objective.type
+            || (actionType !== "pickup" && actionType !== "putdown")) {
+            return { handled: false, terminal: false };
+        }
+
+        if (objective.type !== "handoff") {
+            return { handled: false, terminal: false };
+        }
+        const expectedAction = objective.role === "giver"
+            ? { pickup: "pickup", drop: "putdown", exit: null }[objective.phase]
+            : { wait: "pickup", deliver: "putdown" }[objective.phase];
+        if (actionType !== expectedAction) {
+            this.fail(objectiveId, "handoff action happened in the wrong phase");
+            return { handled: true, terminal: true };
+        }
+        if (outcome.status !== "succeeded"
+            || !resultHasParcel(outcome.result, objective.parcelId)) {
+            this.fail(
+                objectiveId,
+                outcome.status === "failed"
+                    ? actionFailureReason(outcome, `handoff ${actionType} failed`)
+                    : `the selected parcel was not ${actionType === "pickup"
+                        ? "picked up"
+                        : "put down"}`
+            );
+            return { handled: true, terminal: true };
+        }
+
+        if (objective.role === "giver") {
+            objective.phase = objective.phase === "pickup" ? "drop" : "exit";
+            return { handled: true, terminal: false };
+        }
+
+        if (objective.phase === "wait") {
+            objective.phase = "deliver";
+            return { handled: true, terminal: false };
+        }
+
+        this.complete(objectiveId, `delivered parcel ${objective.parcelId}`);
+        return { handled: true, terminal: true };
     }
 }

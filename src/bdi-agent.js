@@ -1,4 +1,5 @@
 import { Beliefs } from "./bdi/beliefs.js";
+import { ObjectiveStore } from "./bdi/objectives.js";
 import { Planner } from "./bdi/planning.js";
 import { runAgentLoop } from "./bdi/loop.js";
 
@@ -13,9 +14,10 @@ export function startBdiAgent(socket) {
     // Beliefs and planning state belong to one agent.
     const beliefs = new Beliefs();
     const planner = new Planner();
+    const objectives = new ObjectiveStore();
 
-    beliefs.init(socket);
-    runAgentLoop(beliefs, planner, socket).catch((error) => {
+    beliefs.init(socket, { objectives });
+    runAgentLoop(beliefs, planner, socket, { objectives }).catch((error) => {
         console.error(`[${beliefs.me.name || "agent"}] fatal error:`, error);
         process.exitCode = 1;
     });

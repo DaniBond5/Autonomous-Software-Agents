@@ -11,7 +11,7 @@ const dbg = (beliefs, ...args) => {
 };
 
 /**
- * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'bfs'|'pddl',intentionKey?:string,kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup'}|{action:'putdown'}} Action
+ * @typedef {{action:'move',dir:'up'|'down'|'left'|'right',source?:'bfs'|'pddl',intentionKey?:string,kind?:'move'|'push',from?:{x:number,y:number},to?:{x:number,y:number},crateId?:string,crateFrom?:{x:number,y:number},crateTo?:{x:number,y:number}}|{action:'pickup',objectiveId?:string}|{action:'putdown',parcelId?:string,objectiveId?:string}} Action
  */
 
 /**
@@ -23,7 +23,9 @@ const roundPos = position => ({
     y: Math.round(position.y)
 });
 
-const samePosition = (a, b) => a.x === b.x && a.y === b.y;
+const samePosition = (a, b) => Boolean(
+    a && b && a.x === b.x && a.y === b.y
+);
 
 // Two rejections in a row mean the route is really taken, not that we were
 // unlucky once. Raising it makes the agent keep pushing into a blocked tile,
@@ -112,6 +114,66 @@ function resultForPath(path, terminal, intention, beliefs) {
 const navigateOnly = (planner, intention, beliefs) =>
     planner.navigateThen(null, intention, beliefs);
 
+const navigateHandoff = (planner, intention, beliefs, target, action = null) =>
+    planner.navigateThen(
+        action ? { ...action, objectiveId: intention.objectiveId } : null,
+        { ...intention, target },
+        beliefs
+    );
+
+const planHandoff = (planner, intention, beliefs) => {
+    const carriesSelected = beliefs.parcels.carried.has(intention.parcelId);
+    if (intention.role === "giver") {
+        if (intention.phase === "pickup") {
+            return navigateHandoff(
+                planner, intention, beliefs, intention.parcelStart, { action: "pickup" }
+            );
+        }
+        if (intention.phase === "drop") {
+            if (!carriesSelected) {
+                return {
+                    status: "unreachable",
+                    reason: "the giver no longer carries the selected parcel"
+                };
+            }
+            return navigateHandoff(
+                planner, intention, beliefs, intention.handoffTile,
+                { action: "putdown", parcelId: intention.parcelId }
+            );
+        }
+        return navigateHandoff(
+            planner, intention, beliefs, intention.exitTile
+        );
+    }
+    if (intention.phase === "deliver") {
+        if (!carriesSelected) {
+            return {
+                status: "unreachable",
+                reason: "the receiver no longer carries the selected parcel"
+            };
+        }
+        return navigateHandoff(
+            planner, intention, beliefs, intention.deliveryTile,
+            { action: "putdown", parcelId: intention.parcelId }
+        );
+    }
+    const reportedGiver = beliefs.partner.state;
+    const sensedGiver = beliefs.agents.others.get(intention.giverId);
+    const giverOnHandoff = samePosition(reportedGiver, intention.handoffTile)
+        || samePosition(sensedGiver, intention.handoffTile);
+    const parcel = beliefs.parcels.visible.get(intention.parcelId)
+        ?? beliefs.parcels.known.get(intention.parcelId);
+    if (parcel && !parcel.carriedBy
+        && samePosition(parcel, intention.handoffTile)
+        && !giverOnHandoff) {
+        return navigateHandoff(
+            planner, intention, beliefs, intention.handoffTile, { action: "pickup" }
+        );
+    }
+
+    return navigateHandoff(planner, intention, beliefs, intention.waitTile);
+};
+
 const planners = {
     go_pick_up: (planner, intention, beliefs) =>
         planner.navigateThen({ action: "pickup" }, intention, beliefs),
@@ -127,6 +189,7 @@ const planners = {
         beliefs.parcels.carried.size === 0
             ? { status: "unreachable", reason: "not carrying any parcels" }
             : { status: "action", action: { action: "putdown" } },
+    handoff: planHandoff,
 };
 
 /**
@@ -145,6 +208,8 @@ export class Planner {
 
         /** @type {{routeKey:string,currentPosition:{x:number,y:number},remainingPath:{x:number,y:number}[]} | null} */
         this.activeDetour = null;
+
+        this.activeObjectiveRoute = null;
 
         /**
          * @type {{intentionKey:string,finalTarget:{x:number,y:number},entry:{x:number,y:number}|null,exit:{x:number,y:number}|null,crateSignature:string,phase:'approach'|'local'|'global'} | null}
@@ -495,6 +560,17 @@ export class Planner {
      */
     async navigateThen(terminal, intention, beliefs) {
         const key = desireKey(intention);
+        if (intention.objectiveId) {
+            const targetKey = POSITION_KEY(intention.target);
+            if (this.activeObjectiveRoute?.objectiveKey !== key
+                || this.activeObjectiveRoute.targetKey !== targetKey) {
+                // One handoff objective changes target as the parcel changes hands.
+                this.resetPlanningState("external objective target changed");
+                this.activeObjectiveRoute = { objectiveKey: key, targetKey };
+            }
+        } else {
+            this.activeObjectiveRoute = null;
+        }
         if (this.activeAgentBlock
             && this.activeAgentBlock.intentionKey !== key) this.resetAgentBlock();
         if (this.activeBfsMoveFailure

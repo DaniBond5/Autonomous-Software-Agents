@@ -9,12 +9,13 @@ import { distanceFromSearch, shortestPathsFrom } from "../utils/geometry.js";
  * expose a target, while action objectives operate on the current tile.
  *
  * @typedef {Object} Desire
- * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'|'go_to_tile'|'pick_up_here'|'put_down_here'} type
+ * @property {'go_pick_up'|'go_deliver'|'go_to_spawner'|'go_to_tile'|'pick_up_here'|'put_down_here'|'handoff'} type
  * @property {Point} [target]  - where to move, when the desire navigates
  * @property {number} utility  - score from the utility functions
  * @property {number} [distance] - current BFS distance from the agent to the target
  * @property {string} [id]     - parcel id, ONLY for go_pick_up (used for intention revision)
  * @property {string} [objectiveId] - explicit objective identity, only for external goals
+ * @property {'pickup'|'drop'|'exit'|'wait'|'deliver'} [phase]
  */
 
 /**
@@ -37,7 +38,7 @@ export function desireKey(desire) {
  * @param {object[]} candidates
  * @returns {object[]} safe candidates when possible, or all candidates as a fallback.
  */
-function preferOperationalDeliveryCandidates(beliefs, candidates) {
+export function preferOperationalDeliveryCandidates(beliefs, candidates) {
     // A policy can explicitly allow one delivery tile.
     // Other unsafe delivery tiles remain excluded.
     const safe = candidates.filter(candidate =>

@@ -3,8 +3,10 @@ import {
     applyStrategyOperation,
     normalizeStrategyOperation
 } from "../bdi/rules.js";
+import { preferOperationalDeliveryCandidates } from "../bdi/desires.js";
 import {
     distanceFromSearch,
+    isMoveAllowed,
     isPositionTraversable,
     shortestPathsFrom
 } from "../utils/geometry.js";
@@ -51,8 +53,11 @@ function failure(observation, replanReason) {
 const ARITHMETIC = /^[\d+\-*/()\s]+$/;
 const STRATEGY_SCOPES = new Set(["me", "teammate", "both"]);
 const RENDEZVOUS_REPLAN_REASON = "the rendezvous could not be started or completed";
+const HANDOFF_REPLAN_REASON = "the parcel handoff could not be started or completed";
 const rendezvousFailure = observation =>
     failure(observation, RENDEZVOUS_REPLAN_REASON);
+const handoffFailure = observation =>
+    failure(observation, HANDOFF_REPLAN_REASON);
 
 const isObject = value => value !== null
     && typeof value === "object"
@@ -61,6 +66,159 @@ const isIntegerPosition = position =>
     Number.isInteger(position?.x) && Number.isInteger(position?.y);
 const manhattanDistance = (first, second) =>
     Math.abs(first.x - second.x) + Math.abs(first.y - second.y);
+const samePosition = (first, second) =>
+    first?.x === second?.x && first?.y === second?.y;
+const copyPoint = point => ({ x: point.x, y: point.y });
+const tileKey = tile => `${tile.x},${tile.y}`;
+const compareTiles = (first, second) =>
+    first.x - second.x || first.y - second.y;
+const compareStrings = (first, second) =>
+    first < second ? -1 : first > second ? 1 : 0;
+const compareHandoffCandidates = (first, second) =>
+    first.cost - second.cost
+    || compareStrings(first.parcel.id, second.parcel.id)
+    || compareTiles(first.handoffTile, second.handoffTile);
+const CARDINAL_STEPS = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 },
+];
+
+function freeKnownParcels(beliefs) {
+    const byId = new Map();
+    const reported = [
+        ...beliefs.parcels.known.values(),
+        ...beliefs.parcels.visible.values(),
+    ];
+    for (const parcel of reported) {
+        if (typeof parcel?.id !== "string" || !parcel.id.trim()
+            || !isIntegerPosition(parcel) || parcel.carriedBy) continue;
+        byId.set(parcel.id.trim(), { ...parcel, id: parcel.id.trim() });
+    }
+    return [...byId.values()];
+}
+
+const adjacentTiles = (beliefs, center) => CARDINAL_STEPS
+    .map(step => beliefs.world.tiles.get(tileKey({
+        x: center.x + step.x,
+        y: center.y + step.y,
+    })))
+    .filter(isIntegerPosition)
+    .map(copyPoint);
+
+function selectHandoffConfiguration(beliefs) {
+    const isBlockedByCrate = position => beliefs.crates.isOccupied(position);
+    const pathOptions = { isBlocked: isBlockedByCrate };
+    const giverPaths = shortestPathsFrom(beliefs, beliefs.me.pos, pathOptions);
+    const receiverPaths = shortestPathsFrom(
+        beliefs,
+        beliefs.partner.state,
+        pathOptions
+    );
+    const freeParcels = freeKnownParcels(beliefs);
+    const parcels = freeParcels
+        .map(parcel => ({
+            parcel,
+            giverPickupDistance: distanceFromSearch(giverPaths, parcel),
+        }))
+        .filter(({ parcel, giverPickupDistance }) =>
+            isPositionTraversable(beliefs, parcel)
+            && !beliefs.world.deliveries.has(tileKey(parcel))
+            && !beliefs.rules.isAvoided(parcel)
+            && Number.isFinite(giverPickupDistance))
+        .sort((first, second) =>
+            first.giverPickupDistance - second.giverPickupDistance
+            || compareStrings(first.parcel.id, second.parcel.id)
+        );
+    const occupiedByFreeParcel = new Set(freeParcels.map(tileKey));
+    const configurations = [];
+
+    for (const { parcel, giverPickupDistance } of parcels) {
+        let parcelConfiguration = null;
+        const handoffTiles = adjacentTiles(beliefs, parcel)
+            .filter(tile => isPositionTraversable(beliefs, tile)
+                && isMoveAllowed(beliefs, parcel, tile)
+                && !beliefs.world.deliveries.has(tileKey(tile))
+                && !beliefs.world.spawners.has(tileKey(tile))
+                && !beliefs.world.isCrateSpace(tile)
+                && !beliefs.crates.isOccupied(tile)
+                && !beliefs.rules.isAvoided(tile)
+                && !occupiedByFreeParcel.has(tileKey(tile)))
+            .sort(compareTiles);
+
+        for (const handoffTile of handoffTiles) {
+            const neighbors = adjacentTiles(beliefs, handoffTile)
+                .filter(tile => isPositionTraversable(beliefs, tile)
+                    && !beliefs.crates.isOccupied(tile)
+                    && !beliefs.rules.isAvoided(tile))
+                .sort(compareTiles);
+            const wait = neighbors
+                .filter(tile => !samePosition(tile, parcel)
+                    && isMoveAllowed(beliefs, tile, handoffTile)
+                    && Number.isFinite(distanceFromSearch(receiverPaths, tile)))
+                .map(tile => ({
+                    tile,
+                    distance: distanceFromSearch(receiverPaths, tile),
+                }))
+                .sort((first, second) =>
+                    first.distance - second.distance
+                    || compareTiles(first.tile, second.tile)
+                )[0];
+            if (!wait) continue;
+
+            const exitTile = neighbors
+                .filter(tile => !samePosition(tile, wait.tile)
+                    && isMoveAllowed(beliefs, handoffTile, tile))
+                .sort(compareTiles)[0];
+            if (!exitTile) continue;
+
+            const handoffPaths = shortestPathsFrom(
+                beliefs,
+                handoffTile,
+                pathOptions
+            );
+            const deliveries = [...beliefs.world.deliveries.values()]
+                .map(delivery => ({
+                    delivery,
+                    distance: distanceFromSearch(handoffPaths, delivery),
+                }))
+                .filter(candidate => !beliefs.rules.isAvoided(candidate.delivery)
+                    && Number.isFinite(candidate.distance));
+            const selectedDelivery = preferOperationalDeliveryCandidates(
+                beliefs,
+                deliveries
+            ).sort((first, second) =>
+                first.distance - second.distance
+                || compareTiles(first.delivery, second.delivery)
+            )[0];
+            if (!selectedDelivery) continue;
+
+            const giverHandoffDistance = 1;
+            const cost = giverPickupDistance
+                + giverHandoffDistance
+                + wait.distance
+                + selectedDelivery.distance;
+            const candidate = {
+                parcel: { id: parcel.id, x: parcel.x, y: parcel.y },
+                handoffTile,
+                waitTile: wait.tile,
+                exitTile,
+                deliveryTile: copyPoint(selectedDelivery.delivery),
+                cost,
+            };
+            if (!parcelConfiguration
+                || compareHandoffCandidates(candidate, parcelConfiguration) < 0) {
+                parcelConfiguration = candidate;
+            }
+        }
+
+        if (parcelConfiguration) configurations.push(parcelConfiguration);
+    }
+
+    configurations.sort(compareHandoffCandidates);
+    return configurations[0] ?? null;
+}
 
 function compareRendezvousAssignments(first, second) {
     const firstRank = [
@@ -301,6 +459,12 @@ export class LLMExecutor {
                     + "Input is JSON with integer x, y, and a non-negative Manhattan radius, "
                     + 'for example {"x":4,"y":7,"radius":3}.',
                 run: input => this.rendezvous(input),
+            },
+            handoff_parcel: {
+                description: "Have this agent pick up one parcel and the teammate deliver "
+                    + "that same parcel. Input must be {}. The runtime selects the parcel "
+                    + "and safe exchange tiles, then waits for delivery.",
+                run: input => this.handoffParcel(input),
             },
         };
     }
@@ -765,6 +929,133 @@ export class LLMExecutor {
             }
         }
     }
+
+    async waitForHandoff(configuration, giverCompletion, deadline) {
+        let giverResult = null;
+        let receiverPicked = false;
+        const parcelId = configuration.parcel.id;
+        let revision = this.beliefs.sensingRevision;
+
+        void giverCompletion.then(result => {
+            giverResult = result;
+            this.beliefs.advanceSensingRevision();
+        });
+
+        while (Date.now() < deadline) {
+            const partnerState = this.beliefs.partner.state;
+            const partnerCarries = Array.isArray(partnerState?.carriedParcelIds)
+                && partnerState.carriedParcelIds.includes(parcelId);
+            if (partnerCarries) receiverPicked = true;
+
+            if (giverResult?.status === "failed"
+                || giverResult?.status === "cancelled") {
+                return handoffFailure(
+                    `Parcel handoff failed: ${giverResult.reason || "the giver objective stopped"}.`
+                );
+            }
+            if (giverResult?.status === "succeeded"
+                && receiverPicked
+                && !partnerCarries
+                && samePosition(partnerState, configuration.deliveryTile)) {
+                return success(
+                    `Parcel handoff completed: the teammate delivered parcel ${parcelId} `
+                    + "after receiving it from this agent."
+                );
+            }
+
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0) break;
+            await this.beliefs.waitForSensingAfter(revision, remainingMs);
+            revision = this.beliefs.sensingRevision;
+        }
+
+        return handoffFailure(
+            "Parcel handoff failed: the delivery was not completed before the deadline."
+        );
+    }
+
+    async handoffParcel(input) {
+        let request = null;
+        try {
+            request = JSON.parse(String(input ?? ""));
+        } catch {}
+        if (!isObject(request) || Object.keys(request).length !== 0) {
+            return handoffFailure(
+                "Cannot start parcel handoff: the input must be {}."
+            );
+        }
+
+        const world = this.beliefs.world;
+        if (!this.beliefs.partner.isKnown
+            || !this.beliefs.me.id?.trim()
+            || !this.beliefs.partner.id?.trim()
+            || !isIntegerPosition(this.beliefs.me.pos)
+            || !isIntegerPosition(this.beliefs.partner.state)
+            || !Array.isArray(this.beliefs.partner.state?.carriedParcelIds)) {
+            return handoffFailure(
+                "Cannot start parcel handoff: the live map or agent state is unavailable."
+            );
+        }
+
+        const configuration = selectHandoffConfiguration(this.beliefs);
+        if (!configuration) {
+            return handoffFailure(
+                "Parcel handoff failed: no safe exchange configuration is reachable by both agents."
+            );
+        }
+
+        const estimatedMoves = configuration.cost + 4;
+        const timeoutMoves = estimatedMoves + world.width + world.height;
+        const timeoutMs = timeoutMoves * world.movementDurationMs();
+        const startedAt = Date.now();
+        const deadline = startedAt + timeoutMs;
+        const sessionId = `${this.beliefs.me.id}:${startedAt}`;
+        const giverObjectiveId = `handoff:${sessionId}:giver`;
+        const receiverObjectiveId = `handoff:${sessionId}:receiver`;
+        const sharedFields = {
+            type: "handoff",
+            parcelId: configuration.parcel.id,
+            giverId: this.beliefs.me.id,
+            receiverId: this.beliefs.partner.id,
+            parcelStart: copyPoint(configuration.parcel),
+            handoffTile: configuration.handoffTile,
+            waitTile: configuration.waitTile,
+            exitTile: configuration.exitTile,
+            deliveryTile: configuration.deliveryTile,
+            expiresAt: deadline,
+        };
+        const giverObjective = {
+            ...sharedFields, id: giverObjectiveId, role: "giver"
+        };
+        const receiverObjective = {
+            ...sharedFields, id: receiverObjectiveId, role: "receiver"
+        };
+
+        try {
+            // The LLM only requests the action. Both BDI loops execute it.
+            const { completion } = this.objectives.requestHandoff(
+                giverObjective
+            );
+            this.beliefs.partner.shareHandoff(receiverObjective);
+            return await this.waitForHandoff(
+                configuration,
+                completion,
+                deadline
+            );
+        } catch (error) {
+            console.error("[llm] parcel handoff coordination failed:", error);
+            return handoffFailure(
+                "Parcel handoff failed because coordination could not be completed."
+            );
+        } finally {
+            this.objectives.clear(giverObjectiveId, "parcel handoff cleanup");
+            try {
+                this.beliefs.partner.shareHandoffClear(receiverObjectiveId);
+            } catch (error) {
+                console.warn("[llm] parcel handoff cleanup message failed:", error);
+            }
+        }
+    }
 }
 
 // The prompt lives next to the registry above because it is written from it.
@@ -802,6 +1093,10 @@ clear_strategy only when the active Level 2 strategy must be removed.
 For a mission that asks both agents to meet near one position, call rendezvous
 once with the center and maximum Manhattan radius. The tool selects the two
 target tiles and waits for both agents. Do not combine rendezvous with hold_at.
+
+For a mission where one agent must pick up a parcel and the teammate must
+deliver the same parcel, call handoff_parcel once with {}. The tool selects the
+parcel and exchange point and waits for the delivery.
 
 Your tools:
 ${tools}

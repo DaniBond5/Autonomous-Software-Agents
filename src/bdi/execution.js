@@ -73,7 +73,10 @@ async function performAction(action, beliefs, socket) {
         case 'putdown': {
             let result;
             try {
-                result = await socket.emitPutdown();
+                const selected = typeof action.parcelId === 'string'
+                    ? [action.parcelId]
+                    : undefined;
+                result = await socket.emitPutdown(selected);
             }
             catch (error) {
                 return sdkFailure(action, error, beliefs);

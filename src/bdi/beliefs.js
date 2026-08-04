@@ -2,6 +2,7 @@ import {
     distanceFromSearch,
     shortestPathsFrom
 } from "../utils/geometry.js";
+import { normalizeHandoffObjective } from "./objectives.js";
 import { RuleStore, applyStrategyOperation } from "./rules.js";
 
 /**
@@ -198,7 +199,9 @@ class Parcels {
             }
 
             this.known.delete(parcel.id);
-            if (parcel.carriedBy !== meId || parcel.reward <= 0) {
+            if (parcel.carriedBy !== meId
+                || !Number.isFinite(parcel.reward)
+                || parcel.reward < 0) {
                 this.carried.delete(parcel.id);
             } else {
                 this.carried.set(parcel.id, parcel);
@@ -224,19 +227,40 @@ class Parcels {
      * @param {{status: string, action: {action: string} | null, result: *}} outcome
      * @param {string} meId
      * @param {{x: number, y: number}} mePos
+     * @param {boolean} [isDelivery=false]
     */
-    reconcileActionOutcome(outcome, meId, mePos) {
+    reconcileActionOutcome(outcome, meId, mePos, isDelivery = false) {
         const actionType = outcome?.action?.action;
         if (outcome?.status !== 'succeeded'
             || (actionType !== 'pickup' && actionType !== 'putdown')
             || !Array.isArray(outcome.result)) return;
 
         if (actionType === 'putdown') {
-            for (const id of this.carried.keys()) {
+            for (const resultParcel of outcome.result) {
+                if (typeof resultParcel?.id !== 'string') continue;
+                const id = resultParcel.id;
+                const carriedParcel = this.carried.get(id);
                 this.visible.delete(id);
                 this.known.delete(id);
+                this.carried.delete(id);
+
+                if (!isDelivery && carriedParcel && isFinitePosition(mePos)) {
+                    const parcel = {
+                        ...carriedParcel,
+                        ...resultParcel,
+                        x: mePos.x,
+                        y: mePos.y,
+                        carriedBy: null,
+                    };
+                    this.visible.set(id, parcel);
+                    if (Number.isFinite(parcel.reward) && parcel.reward > 0) {
+                        this.known.set(id, {
+                            ...parcel,
+                            observedAt: Date.now(),
+                        });
+                    }
+                }
             }
-            this.carried.clear();
             return;
         }
 
@@ -262,8 +286,11 @@ class Parcels {
                 parcel.y = mePos.y;
             }
 
-            if (!meId || !Number.isFinite(parcel.reward)
-                || !isFinitePosition(parcel)) continue;
+            if (!meId
+                || !Number.isFinite(parcel.reward)
+                || !isFinitePosition(parcel)) {
+                continue;
+            }
 
             delete parcel.observedAt;
             this.carried.set(id, { ...parcel, carriedBy: meId });
@@ -531,17 +558,32 @@ class Agents {
 */
 const PROTOCOL_VERSION = 1;
 
+function normalizeCarriedParcelIds(ids) {
+    if (!Array.isArray(ids)) return null;
+    const normalized = new Set();
+    for (const id of ids) {
+        if (typeof id !== 'string' || !id.trim()) return null;
+        normalized.add(id.trim());
+    }
+    return [...normalized].sort((first, second) =>
+        first < second ? -1 : first > second ? 1 : 0
+    );
+}
+
 /**
  * Validates and copies the small state report shared between partners.
  * @param {*} state
- * @returns {{x: number, y: number, carriedCount: number, carriedReward: number} | null}
+ * @returns {{x: number, y: number, carriedCount: number, carriedReward: number,
+ *            carriedParcelIds: string[]} | null}
  */
 function normalizePartnerState(state) {
+    const carriedParcelIds = normalizeCarriedParcelIds(state?.carriedParcelIds);
     if (!isFinitePosition(state)
         || !Number.isInteger(state.carriedCount)
         || state.carriedCount < 0
         || !Number.isFinite(state.carriedReward)
-        || state.carriedReward < 0) {
+        || state.carriedReward < 0
+        || carriedParcelIds === null) {
         return null;
     }
 
@@ -549,7 +591,8 @@ function normalizePartnerState(state) {
         x: Number(state.x),
         y: Number(state.y),
         carriedCount: state.carriedCount,
-        carriedReward: Number(state.carriedReward)
+        carriedReward: Number(state.carriedReward),
+        carriedParcelIds
     };
 }
 
@@ -577,13 +620,15 @@ class Partner {
         /**
          * The last valid state reported by the partner. receivedAt uses this agent's clock.
          * @type {{x: number, y: number, carriedCount: number, carriedReward: number,
+         *         carriedParcelIds: string[],
          *         receivedAt: number} | null}
         */
         this.state = null;
 
         /**
          * This agent's latest valid state, kept so a newly connected partner receives it.
-         * @type {{x: number, y: number, carriedCount: number, carriedReward: number} | null}
+         * @type {{x: number, y: number, carriedCount: number, carriedReward: number,
+         *         carriedParcelIds: string[]} | null}
         */
         this.myState = null;
 
@@ -686,7 +731,8 @@ class Partner {
         if (!this.isKnown || !this.myState) return;
 
         const state = this.myState;
-        const fingerprint = `${state.x},${state.y},${state.carriedCount},${state.carriedReward}`;
+        const fingerprint = `${state.x},${state.y},${state.carriedCount},`
+            + `${state.carriedReward},${JSON.stringify(state.carriedParcelIds)}`;
         if (fingerprint === this.sharedStateFingerprint) return;
         this.sharedStateFingerprint = fingerprint;
 
@@ -769,6 +815,15 @@ class Partner {
     shareHoldClear(id) {
         if (typeof id !== 'string' || !id.trim()) return;
         this.send({ kind: 'hold_clear', id });
+    }
+
+    shareHandoff(objective) {
+        this.send({ kind: 'handoff', objective });
+    }
+
+    shareHandoffClear(id) {
+        if (typeof id !== 'string' || !id.trim()) return;
+        this.send({ kind: 'handoff_clear', id: id.trim() });
     }
 
     /**
@@ -1063,28 +1118,30 @@ export class Beliefs {
         });
     }
 
+    shareCurrentState() {
+        if (!isFinitePosition(this.me.pos)
+            || this.me.pos.x < 0
+            || this.me.pos.y < 0) return;
+
+        this.partner.shareState({
+            x: this.me.pos.x,
+            y: this.me.pos.y,
+            carriedCount: this.parcels.carried.size,
+            carriedReward: this.parcels.carriedScore(),
+            carriedParcelIds: [...this.parcels.carried.keys()]
+        });
+    }
+
     /**
      * @param {object} socket
+     * @param {{objectives?: import("./objectives.js").ObjectiveStore | null}} [options]
     */
-    init(socket) {
+    init(socket, { objectives = null } = {}) {
         this.partner.socket = socket;
-
-        const shareCurrentState = () => {
-            if (!isFinitePosition(this.me.pos)
-                || this.me.pos.x < 0
-                || this.me.pos.y < 0) return;
-
-            this.partner.shareState({
-                x: this.me.pos.x,
-                y: this.me.pos.y,
-                carriedCount: this.parcels.carried.size,
-                carriedReward: this.parcels.carriedScore()
-            });
-        };
 
         socket.onYou((payload) => {
             this.me.update(payload);
-            shareCurrentState();
+            this.shareCurrentState();
             this.advanceSensingRevision();
         });
 
@@ -1096,7 +1153,7 @@ export class Beliefs {
                 this.me.id,
                 isVisible
             );
-            shareCurrentState();
+            this.shareCurrentState();
             this.crates.update(
                 sensing.crates ?? [],
                 isVisible
@@ -1152,6 +1209,31 @@ export class Beliefs {
             if (message.kind === 'hold_clear') {
                 if (typeof message.id === 'string' && message.id.trim()) {
                     if (this.rules.clearHold(message.id)) {
+                        this.advanceSensingRevision();
+                    }
+                }
+                return;
+            }
+
+            if (message.kind === 'handoff') {
+                const objective = normalizeHandoffObjective(message.objective);
+                if (!objective
+                    || objective.role !== 'receiver'
+                    || objective.receiverId !== this.me.id
+                    || !objectives) return;
+                try {
+                    objectives.requestHandoff(objective);
+                    this.advanceSensingRevision();
+                } catch {}
+                return;
+            }
+
+            if (message.kind === 'handoff_clear') {
+                if (typeof message.id === 'string' && message.id.trim()) {
+                    if (objectives?.clear(
+                        message.id.trim(),
+                        "handoff cleared by partner"
+                    )) {
                         this.advanceSensingRevision();
                     }
                 }
