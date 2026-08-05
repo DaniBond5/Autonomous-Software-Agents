@@ -1,4 +1,11 @@
+import config from "../config.js";
 import { trace } from "../utils/trace.js";
+import { normalizeActionResultEntry } from "./beliefs.js";
+
+// TEMP diagnostic: handoff putdown mismatch.
+const dbg = (...args) => {
+    if (config.debug) console.log("[objective]", ...args);
+};
 
 // Temporary mission objectives outrank normal autonomous desires.
 const LLM_OBJECTIVE_UTILITY = 10_000;
@@ -18,6 +25,12 @@ const samePosition = (first, second) => Boolean(
 const areAdjacent = (first, second) =>
     Math.abs(first.x - second.x) + Math.abs(first.y - second.y) === 1;
 
+// A giver already carrying the parcel starts at "drop" instead of "pickup".
+const HANDOFF_START_PHASES = {
+    giver: new Set(["pickup", "drop"]),
+    receiver: new Set(["wait"]),
+};
+
 function normalizeHandoffObjective(raw) {
     if (!isObject(raw) || raw.type !== "handoff") return null;
 
@@ -28,6 +41,12 @@ function normalizeHandoffObjective(raw) {
     const role = raw.role === "giver" || raw.role === "receiver"
         ? raw.role
         : null;
+    const startPhase = role && HANDOFF_START_PHASES[role].has(raw.startPhase)
+        ? raw.startPhase
+        : null;
+    // Identifies the other role's objective, so a stale result cannot be
+    // mistaken for this exchange's counterpart.
+    const peerObjectiveId = nonEmptyString(raw.peerObjectiveId);
     const pointNames = [
         "parcelStart", "handoffTile", "waitTile", "exitTile", "deliveryTile"
     ];
@@ -36,6 +55,9 @@ function normalizeHandoffObjective(raw) {
     if (!id || !parcelId || !giverId || !receiverId
         || giverId === receiverId
         || !role
+        || !startPhase
+        || !peerObjectiveId
+        || peerObjectiveId === id
         || points.some(point => !isIntegerPoint(point))
         || !areAdjacent(raw.parcelStart, raw.handoffTile)
         || samePosition(raw.parcelStart, raw.waitTile)
@@ -51,6 +73,8 @@ function normalizeHandoffObjective(raw) {
         id,
         type: "handoff",
         role,
+        startPhase,
+        peerObjectiveId,
         parcelId,
         giverId,
         receiverId,
@@ -63,8 +87,39 @@ function normalizeHandoffObjective(raw) {
     };
 }
 
-const resultHasParcel = (result, parcelId) => Array.isArray(result)
-    && result.some(parcel => nonEmptyString(parcel?.id) === parcelId);
+// A targeted action moves exactly one parcel, so the tile it ended up on
+// identifies it when the server answers without ids. The two actions differ
+// only in carriage: a putdown leaves the parcel uncarried on that tile, while
+// a pickup leaves it carried by whoever made the call, which is this agent.
+const matchesByPosition = (entries, actionType, currentPosition) => {
+    if (entries.length !== 1
+        || !isIntegerPoint(currentPosition)
+        || !samePosition(entries[0], currentPosition)) {
+        return false;
+    }
+    if (actionType === "putdown") return !entries[0].carriedBy;
+    if (actionType === "pickup") return Boolean(entries[0].carriedBy);
+    return false;
+};
+
+const resultHasParcel = (result, parcelId, actionType, currentPosition) => {
+    if (!Array.isArray(result)) return false;
+
+    const entries = result
+        .map(normalizeActionResultEntry)
+        .filter(entry => entry !== null);
+    const identified = entries.filter(entry => entry.id !== undefined);
+    if (identified.length > 0) {
+        return identified.some(entry => entry.id === parcelId);
+    }
+    if (!matchesByPosition(entries, actionType, currentPosition)) return false;
+
+    trace("objective", `${actionType}-by-position`, {
+        parcel: parcelId,
+        at: `${currentPosition.x},${currentPosition.y}`
+    });
+    return true;
+};
 
 const actionFailureReason = (outcome, fallback) => {
     if (outcome?.error instanceof Error) return outcome.error.message;
@@ -78,6 +133,8 @@ const handoffTarget = objective => {
             pickup: objective.parcelStart,
             drop: objective.handoffTile,
             exit: objective.exitTile,
+            // Parked: the target it already stands on plans no action.
+            hold: objective.exitTile,
         }[objective.phase];
     }
     return objective.phase === "deliver"
@@ -88,13 +145,14 @@ const handoffTarget = objective => {
 const objectiveTraceType = objective =>
     objective.hold === true ? "hold" : objective.type;
 
-const traceHandoffPhase = (objective, from, to) => {
+const traceHandoffPhase = (objective, from, to, reason) => {
     trace("objective", "phase", {
         id: objective.id,
         role: objective.role,
         from,
         to,
-        parcel: objective.parcelId
+        parcel: objective.parcelId,
+        reason
     });
 };
 
@@ -170,10 +228,10 @@ export class ObjectiveStore {
                 type: "handoff",
             });
             if (!normalized) throw new TypeError("invalid handoff objective");
-            objective = {
-                ...normalized,
-                phase: normalized.role === "giver" ? "pickup" : "wait",
-            };
+            // Only the runtime `phase` is kept: _reconcileHandoff advances it,
+            // so a retained `startPhase` would soon contradict it.
+            const { startPhase, ...rest } = normalized;
+            objective = { ...rest, phase: startPhase };
         } else {
             throw new TypeError(`unsupported objective type: ${String(type)}`);
         }
@@ -191,7 +249,16 @@ export class ObjectiveStore {
         if (objective.hold === true) {
             this._settleActive("succeeded", "hold duration completed");
         } else if (objective.type === "handoff") {
-            this._settleActive("failed", "handoff deadline expired");
+            // A parked giver already dropped the parcel, so its own work stands
+            // even when the receiver never reported back.
+            const parkedGiver = objective.role === "giver"
+                && objective.phase === "hold";
+            this._settleActive(
+                parkedGiver ? "succeeded" : "failed",
+                parkedGiver
+                    ? "handoff deadline expired while waiting for the receiver"
+                    : "handoff deadline expired"
+            );
         }
     }
 
@@ -229,6 +296,31 @@ export class ObjectiveStore {
         return this.settle(objective.id, "cancelled", reason);
     }
 
+    /**
+     * Releases a giver parked on its exit tile once the receiver reports back.
+     * A failed receiver releases it too: a giver frozen after a failure would
+     * be worse than the re-grab this hold prevents. The giver always ends on
+     * success, because its own drop happened; the exchange's verdict is the
+     * receiver's result, which the caller reads directly.
+     * @returns {boolean}
+     */
+    settleGiverHold(result) {
+        const objective = this.activeObjective();
+        if (objective?.type !== "handoff"
+            || objective.role !== "giver"
+            || objective.phase !== "hold"
+            || result?.role !== "receiver"
+            || !TERMINAL_STATUSES.has(result?.status)
+            || nonEmptyString(result.id) !== objective.peerObjectiveId) {
+            return false;
+        }
+
+        return this._settleActive(
+            "succeeded",
+            `receiver reported ${result.status}`
+        );
+    }
+
     settle(objectiveId, status, reason) {
         if (!TERMINAL_STATUSES.has(status)) return false;
         this._expireActive();
@@ -241,20 +333,22 @@ export class ObjectiveStore {
         const entry = this.active;
         this.active = null;
         entry.objective.status = status;
+        const settledReason = String(reason ?? "");
         if (entry.objective.type === "handoff"
             && status === "succeeded"
-            && (entry.objective.phase === "exit"
+            && (entry.objective.phase === "hold"
                 || entry.objective.phase === "deliver")) {
             traceHandoffPhase(
                 entry.objective,
                 entry.objective.phase,
-                "succeeded"
+                "succeeded",
+                settledReason
             );
         }
         const result = {
             objectiveId: entry.objective.id,
             status,
-            reason: String(reason ?? ""),
+            reason: settledReason,
         };
         trace("objective", "complete", {
             id: entry.objective.id,
@@ -298,17 +392,16 @@ export class ObjectiveStore {
             && objective.role === "giver"
             && objective.phase === "exit"
             && samePosition(currentPosition, objective.exitTile)) {
-            this.settle(
-                objective.id,
-                "succeeded",
-                `left handoff tile after dropping parcel ${objective.parcelId}`
-            );
+            // Staying parked keeps the dropped parcel out of reach of the
+            // giver's own autonomous desires until the receiver is done.
+            objective.phase = "hold";
+            traceHandoffPhase(objective, "exit", "hold");
             return true;
         }
         return false;
     }
 
-    reconcileAction(intention, outcome) {
+    reconcileAction(intention, outcome, currentPosition) {
         const objective = this.activeObjective();
         const objectiveId = intention?.objectiveId;
         const actionType = outcome?.action?.action;
@@ -321,7 +414,9 @@ export class ObjectiveStore {
         }
 
         if (objective.type === "handoff") {
-            return this._reconcileHandoff(objective, actionType, outcome);
+            return this._reconcileHandoff(
+                objective, actionType, outcome, currentPosition
+            );
         }
 
         const expectedAction = objective.type === "pick_up_here"
@@ -355,7 +450,7 @@ export class ObjectiveStore {
         return true;
     }
 
-    _reconcileHandoff(objective, actionType, outcome) {
+    _reconcileHandoff(objective, actionType, outcome, currentPosition) {
         const expectedAction = objective.role === "giver"
             ? { pickup: "pickup", drop: "putdown", exit: null }[objective.phase]
             : { wait: "pickup", deliver: "putdown" }[objective.phase];
@@ -376,7 +471,20 @@ export class ObjectiveStore {
             return true;
         }
         if (outcome.status !== "succeeded"
-            || !resultHasParcel(outcome.result, objective.parcelId)) {
+            || !resultHasParcel(
+                outcome.result,
+                objective.parcelId,
+                actionType,
+                currentPosition
+            )) {
+            // TEMP diagnostic: an id mismatch and a missing parcel look alike here.
+            dbg(
+                `handoff ${actionType} rejected expected=${objective.parcelId}`
+                + ` status=${outcome.status}`
+                + ` actual=${JSON.stringify(Array.isArray(outcome.result)
+                    ? outcome.result.map(parcel => parcel?.id)
+                    : outcome.result)}`
+            );
             this.settle(
                 objective.id,
                 "failed",

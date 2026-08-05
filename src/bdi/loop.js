@@ -15,6 +15,16 @@ export const wait = (ms) =>
 const intentionKey = (intention) =>
     intention ? desireKey(intention) : null;
 
+// Each desire type keeps the parcel id under its own field: handoff objectives
+// use parcelId, autonomous pickups use id. Matching the type explicitly rather
+// than falling back across fields stops a future desire that reuses `id` for
+// something else from silently inheriting this attribution.
+const intendedPickupParcelId = (intention) => {
+    if (intention?.type === "handoff") return intention.parcelId;
+    if (intention?.type === "go_pick_up") return intention.id;
+    return undefined;
+};
+
 /**
  * This function runs the BDI control loop of one agent.
  * The loop lives here, and not in the entry point, so a second agent can run
@@ -100,15 +110,23 @@ export async function runAgentLoop(
 
         const outcome = await executeAction(planningResult.action, beliefs, socket);
 
+        const actionType = outcome?.action?.action;
+        // Action results carry no id, so name the parcel the action targeted.
+        const intendedParcelId = actionType === "putdown"
+            ? outcome.action.parcelId
+            : actionType === "pickup"
+                ? intendedPickupParcelId(currentIntention)
+                : undefined;
+
         beliefs.parcels.reconcileActionOutcome(
             outcome,
             beliefs.me.id,
             beliefs.me.pos,
             beliefs.world.deliveries.has(
                 `${beliefs.me.pos.x},${beliefs.me.pos.y}`
-            )
+            ),
+            intendedParcelId
         );
-        const actionType = outcome?.action?.action;
         const isParcelAction = actionType === "pickup"
             || actionType === "putdown";
         if (isParcelAction && outcome.status === "succeeded") {
@@ -121,7 +139,8 @@ export async function runAgentLoop(
         );
         const resetFromAction = objectives?.reconcileAction(
             currentIntention,
-            outcome
+            outcome,
+            beliefs.me.pos
         ) ?? false;
 
         const isTerminalAction = actionType === "pickup"

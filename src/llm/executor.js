@@ -18,6 +18,16 @@ const success = text => ({ ok: true, text });
 const failure = text => ({ ok: false, text });
 
 const COORDINATION_POLL_MS = 100;
+
+// Walking is only part of a handoff: planning, sensing ticks and the partner's
+// own loop all cost wall time that does not scale with movementDurationMs. An
+// observed run walked 12 tiles in about 3 s where a move was nominally 50 ms,
+// roughly 5x per move; estimatedMoves sums both agents even though they move in
+// parallel, which absorbs about half of that, so 3x covers the gap. The floor
+// carries short exchanges, whose cost is almost entirely coordination: at 50 ms
+// a move the previous additive map-size slack was worth under a second.
+const HANDOFF_TIMEOUT_MARGIN = 3;
+const HANDOFF_MIN_TIMEOUT_MS = 10_000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
@@ -67,31 +77,120 @@ const adjacentTiles = (beliefs, center) => CARDINAL_STEPS
     .filter(isIntegerPosition)
     .map(copyPoint);
 
+/** Parcels already held by one of the two agents, deduplicated by parcel id. */
+function carriedHandoffCandidates(beliefs) {
+    const byId = new Map();
+    const addCarried = (parcelId, giverId, receiverId, carrier) => {
+        const id = typeof parcelId === "string" ? parcelId.trim() : "";
+        if (!id || byId.has(id) || !isIntegerPosition(carrier)) return;
+        byId.set(id, {
+            // A carried parcel is not sensed, so describe it from its carrier.
+            parcel: { id, x: carrier.x, y: carrier.y },
+            parcelStart: copyPoint(carrier),
+            giverId,
+            receiverId,
+            giverStartPhase: "drop",
+            carried: true,
+        });
+    };
+
+    for (const parcelId of beliefs.parcels.carried.keys()) {
+        addCarried(parcelId, beliefs.me.id, beliefs.partner.id, beliefs.me.pos);
+    }
+    for (const parcelId of beliefs.partner.state?.carriedParcelIds ?? []) {
+        addCarried(
+            parcelId, beliefs.partner.id, beliefs.me.id, beliefs.partner.state
+        );
+    }
+    return [...byId.values()];
+}
+
+/** Both assignments are offered, because either agent can fetch a free parcel. */
+function freeHandoffCandidates(beliefs, freeParcels) {
+    return freeParcels.flatMap(parcel => {
+        const shared = {
+            parcel: { id: parcel.id, x: parcel.x, y: parcel.y },
+            parcelStart: copyPoint(parcel),
+            giverStartPhase: "pickup",
+            carried: false,
+        };
+        return [
+            { ...shared, giverId: beliefs.me.id, receiverId: beliefs.partner.id },
+            { ...shared, giverId: beliefs.partner.id, receiverId: beliefs.me.id },
+        ];
+    });
+}
+
+// Cached per handoff tile: candidates sharing one drop tile share this search.
+function bestDeliveryFrom(beliefs, handoffTile, pathOptions, cache) {
+    const key = tileKey(handoffTile);
+    if (cache.has(key)) return cache.get(key);
+
+    const handoffPaths = shortestPathsFrom(beliefs, handoffTile, pathOptions);
+    const deliveries = [...beliefs.world.deliveries.values()]
+        .map(delivery => ({
+            delivery,
+            distance: distanceFromSearch(handoffPaths, delivery),
+        }))
+        .filter(candidate => !beliefs.rules.isAvoided(candidate.delivery)
+            && Number.isFinite(candidate.distance));
+    const selected = preferOperationalDeliveryCandidates(beliefs, deliveries)
+        .sort((first, second) =>
+            first.distance - second.distance
+            || compareTiles(first.delivery, second.delivery)
+        )[0] ?? null;
+
+    cache.set(key, selected);
+    return selected;
+}
+
+// A carried parcel skips the pickup entirely, so it always wins over a free one.
+const compareHandoffConfigurations = (first, second) =>
+    Number(second.carried) - Number(first.carried)
+    || first.estimatedMoves - second.estimatedMoves
+    || compareStrings(first.parcel.id, second.parcel.id)
+    || compareStrings(first.giverId, second.giverId)
+    || compareTiles(first.handoffTile, second.handoffTile)
+    || compareTiles(first.waitTile, second.waitTile)
+    || compareTiles(first.exitTile, second.exitTile);
+
 function selectHandoffConfiguration(beliefs) {
     const pathOptions = { isBlocked: position => beliefs.crates.isOccupied(position) };
-    const giverPaths = shortestPathsFrom(beliefs, beliefs.me.pos, pathOptions);
-    const receiverPaths = shortestPathsFrom(
-        beliefs, beliefs.partner.state, pathOptions
-    );
-    const freeParcels = freeKnownParcels(beliefs);
-    const occupiedByFreeParcel = new Set(freeParcels.map(tileKey));
-    const parcels = freeParcels
-        .map(parcel => ({
-            parcel,
-            giverPickupDistance: distanceFromSearch(giverPaths, parcel),
-        }))
-        .filter(({ parcel, giverPickupDistance }) =>
-            isPositionTraversable(beliefs, parcel)
-            && !beliefs.world.deliveries.has(tileKey(parcel))
-            && !beliefs.rules.isAvoided(parcel)
-            && Number.isFinite(giverPickupDistance))
-        .sort((first, second) =>
-            first.giverPickupDistance - second.giverPickupDistance
-            || compareStrings(first.parcel.id, second.parcel.id)
-        );
+    const pathsById = new Map([
+        [beliefs.me.id, beliefs.me.pos],
+        [beliefs.partner.id, beliefs.partner.state],
+    ].map(([id, origin]) =>
+        [id, shortestPathsFrom(beliefs, origin, pathOptions)]
+    ));
 
-    for (const { parcel, giverPickupDistance } of parcels) {
-        const parcelStart = copyPoint(parcel);
+    const carriedCandidates = carriedHandoffCandidates(beliefs);
+    const carriedIds = new Set(
+        carriedCandidates.map(candidate => candidate.parcel.id)
+    );
+    // A parcel picked up outside sensing keeps a stale free position in beliefs,
+    // so a carried id must never reappear as a free parcel or as a busy tile.
+    const freeParcels = freeKnownParcels(beliefs)
+        .filter(parcel => !carriedIds.has(parcel.id));
+    const occupiedByFreeParcel = new Set(freeParcels.map(tileKey));
+    const deliveryCache = new Map();
+    const configurations = [];
+
+    for (const candidate of [
+        ...carriedCandidates,
+        ...freeHandoffCandidates(beliefs, freeParcels),
+    ]) {
+        const giverPaths = pathsById.get(candidate.giverId);
+        const receiverPaths = pathsById.get(candidate.receiverId);
+        const parcelStart = candidate.parcelStart;
+        if (!giverPaths || !receiverPaths
+            || !isPositionTraversable(beliefs, parcelStart)
+            || beliefs.world.deliveries.has(tileKey(parcelStart))
+            || beliefs.rules.isAvoided(parcelStart)) continue;
+
+        const giverPickupDistance = distanceFromSearch(giverPaths, parcelStart);
+        if (candidate.giverStartPhase === "pickup"
+            && !Number.isFinite(giverPickupDistance)) continue;
+
         const handoffTiles = adjacentTiles(beliefs, parcelStart)
             .filter(tile => isPositionTraversable(beliefs, tile)
                 && isMoveAllowed(beliefs, parcelStart, tile)
@@ -104,6 +203,12 @@ function selectHandoffConfiguration(beliefs) {
             .sort(compareTiles);
 
         for (const handoffTile of handoffTiles) {
+            // A giver already carrying the parcel walks straight to the drop.
+            const giverApproach = candidate.giverStartPhase === "drop"
+                ? distanceFromSearch(giverPaths, handoffTile)
+                : giverPickupDistance + 1;
+            if (!Number.isFinite(giverApproach)) continue;
+
             const neighbors = adjacentTiles(beliefs, handoffTile)
                 .filter(tile => isPositionTraversable(beliefs, tile)
                     && !beliefs.crates.isOccupied(tile)
@@ -114,9 +219,9 @@ function selectHandoffConfiguration(beliefs) {
                     tile,
                     distance: distanceFromSearch(receiverPaths, tile),
                 }))
-                .filter(candidate => !samePosition(candidate.tile, parcelStart)
-                    && Number.isFinite(candidate.distance)
-                    && isMoveAllowed(beliefs, candidate.tile, handoffTile))
+                .filter(entry => !samePosition(entry.tile, parcelStart)
+                    && Number.isFinite(entry.distance)
+                    && isMoveAllowed(beliefs, entry.tile, handoffTile))
                 .sort((first, second) =>
                     first.distance - second.distance
                     || compareTiles(first.tile, second.tile)
@@ -129,44 +234,35 @@ function selectHandoffConfiguration(beliefs) {
                 .sort(compareTiles)[0];
             if (!exitTile) continue;
 
-            const handoffPaths = shortestPathsFrom(
-                beliefs,
-                handoffTile,
-                pathOptions
+            const selectedDelivery = bestDeliveryFrom(
+                beliefs, handoffTile, pathOptions, deliveryCache
             );
-            const deliveries = [...beliefs.world.deliveries.values()]
-                .map(delivery => ({
-                    delivery,
-                    distance: distanceFromSearch(handoffPaths, delivery),
-                }))
-                .filter(candidate => !beliefs.rules.isAvoided(candidate.delivery)
-                    && Number.isFinite(candidate.distance));
-            const selectedDelivery = preferOperationalDeliveryCandidates(
-                beliefs,
-                deliveries
-            ).sort((first, second) =>
-                first.distance - second.distance
-                || compareTiles(first.delivery, second.delivery)
-            )[0];
             if (!selectedDelivery) continue;
 
-            return {
-                parcel: { id: parcel.id, x: parcel.x, y: parcel.y },
-                parcelStart,
+            // The receiver reaches its wait tile, steps onto the handoff tile
+            // to pick the parcel up, and only then walks to the delivery.
+            const receiverMoves = wait.distance
+                + 1
+                + selectedDelivery.distance;
+
+            configurations.push({
+                giverId: candidate.giverId,
+                receiverId: candidate.receiverId,
+                giverStartPhase: candidate.giverStartPhase,
+                receiverStartPhase: "wait",
+                carried: candidate.carried,
+                parcel: { ...candidate.parcel },
+                parcelStart: copyPoint(parcelStart),
                 handoffTile: copyPoint(handoffTile),
                 waitTile: copyPoint(wait.tile),
                 exitTile: copyPoint(exitTile),
                 deliveryTile: copyPoint(selectedDelivery.delivery),
-                estimatedMoves: giverPickupDistance
-                    + 1
-                    + wait.distance
-                    + selectedDelivery.distance
-                    + 4,
-            };
+                estimatedMoves: giverApproach + receiverMoves + 4,
+            });
         }
     }
 
-    return null;
+    return configurations.sort(compareHandoffConfigurations)[0] ?? null;
 }
 
 function selectRendezvousTargets(beliefs, center, radius) {
@@ -327,9 +423,11 @@ export class LLMExecutor {
                 run: input => this.rendezvous(input),
             },
             handoff_parcel: {
-                description: "Have this agent pick up one parcel and the teammate deliver "
-                    + "that same parcel. Input must be {}. The runtime selects the parcel "
-                    + "and safe exchange tiles, then waits for delivery.",
+                description: "Transfer one parcel from one agent to the other so that it "
+                    + "gets delivered. Input must be {}. The runtime picks a free or already "
+                    + "carried parcel, decides which agent gives it and which one receives "
+                    + "it, selects the safe exchange tiles, then waits for the receiver to "
+                    + "deliver that same parcel.",
                 run: input => this.handoffParcel(input),
             },
         };
@@ -626,43 +724,50 @@ export class LLMExecutor {
     }
 
     /**
-     * @param {Promise<object>} giverCompletion
-     * @param {string} receiverObjectiveId
-     * @param {string} parcelId
-     * @param {number} deadline
+     * @param {{localCompletion: Promise<object>, localRole: "giver" | "receiver",
+     *     giverObjectiveId: string, receiverObjectiveId: string,
+     *     parcelId: string, deadline: number}} options
      * @returns {Promise<ToolExecutionResult>}
      */
-    async waitForHandoff(giverCompletion, receiverObjectiveId, parcelId, deadline) {
-        let giverResult = null;
+    async waitForHandoff(options) {
+        const {
+            localCompletion, localRole,
+            giverObjectiveId, receiverObjectiveId,
+            parcelId, deadline
+        } = options;
+        let localResult = null;
 
-        void giverCompletion.then(result => {
-            giverResult = result;
+        void localCompletion.then(result => {
+            localResult = result;
         });
 
+        // Whichever role runs remotely is only observable through its result slot.
+        const resultFor = (role, objectiveId) => role === localRole
+            ? localResult
+            : this.beliefs.partner.handoffResultFor(role, objectiveId);
+
         while (Date.now() < deadline) {
-            if (giverResult?.status === "failed"
-                || giverResult?.status === "cancelled") {
-                return failure(
-                    `Parcel handoff failed: ${giverResult.reason || "the giver objective stopped"}.`
+            const giverResult = resultFor("giver", giverObjectiveId);
+            const receiverResult = resultFor("receiver", receiverObjectiveId);
+
+            // A delivered parcel proves the transfer, whatever the giver reported.
+            if (receiverResult?.status === "succeeded") {
+                return success(
+                    `Parcel handoff completed: parcel ${parcelId} was transferred `
+                    + "and delivered by the receiver."
                 );
             }
 
-            const receiverResult = this.beliefs.partner.handoffResult;
-            if (receiverResult?.id === receiverObjectiveId) {
-                if (receiverResult.status === "succeeded"
-                    && giverResult?.status === "succeeded") {
-                    return success(
-                        `Parcel handoff completed: the teammate delivered parcel ${parcelId} `
-                        + "after receiving it from this agent."
-                    );
-                }
-                if (receiverResult.status === "failed"
-                    || receiverResult.status === "cancelled") {
-                    return failure(
-                        `Parcel handoff failed: ${receiverResult.reason
-                            || "the receiver objective stopped"}.`
-                    );
-                }
+            const stopped = [
+                { role: "giver", result: giverResult },
+                { role: "receiver", result: receiverResult },
+            ].find(({ result }) =>
+                result?.status === "failed" || result?.status === "cancelled");
+            if (stopped) {
+                return failure(
+                    `Parcel handoff failed: ${stopped.result.reason
+                        || `the ${stopped.role} objective stopped`}.`
+                );
             }
 
             const remainingMs = deadline - Date.now();
@@ -710,20 +815,30 @@ export class LLMExecutor {
             );
         }
 
-        const timeoutMoves = configuration.estimatedMoves
-            + world.width
-            + world.height;
-        const timeoutMs = timeoutMoves * world.movementDurationMs();
+        const estimatedMs = configuration.estimatedMoves
+            * world.movementDurationMs();
+        const timeoutMs = Math.max(
+            estimatedMs * HANDOFF_TIMEOUT_MARGIN,
+            HANDOFF_MIN_TIMEOUT_MS
+        );
         const startedAt = Date.now();
         const deadline = startedAt + timeoutMs;
         const sessionId = `${this.beliefs.me.id}:${startedAt}`;
         const giverObjectiveId = `handoff:${sessionId}:giver`;
         const receiverObjectiveId = `handoff:${sessionId}:receiver`;
+        const localIsGiver = configuration.giverId === this.beliefs.me.id;
+        const localRole = localIsGiver ? "giver" : "receiver";
+        const localObjectiveId = localIsGiver
+            ? giverObjectiveId
+            : receiverObjectiveId;
+        const remoteObjectiveId = localIsGiver
+            ? receiverObjectiveId
+            : giverObjectiveId;
         const sharedFields = {
             type: "handoff",
             parcelId: configuration.parcel.id,
-            giverId: this.beliefs.me.id,
-            receiverId: this.beliefs.partner.id,
+            giverId: configuration.giverId,
+            receiverId: configuration.receiverId,
             parcelStart: configuration.parcelStart,
             handoffTile: configuration.handoffTile,
             waitTile: configuration.waitTile,
@@ -732,14 +847,28 @@ export class LLMExecutor {
             expiresAt: deadline,
         };
         const giverObjective = {
-            ...sharedFields, id: giverObjectiveId, role: "giver"
+            ...sharedFields,
+            id: giverObjectiveId,
+            peerObjectiveId: receiverObjectiveId,
+            role: "giver",
+            startPhase: configuration.giverStartPhase,
         };
         const receiverObjective = {
-            ...sharedFields, id: receiverObjectiveId, role: "receiver"
+            ...sharedFields,
+            id: receiverObjectiveId,
+            peerObjectiveId: giverObjectiveId,
+            role: "receiver",
+            startPhase: configuration.receiverStartPhase,
         };
+        const localObjective = localIsGiver ? giverObjective : receiverObjective;
+        const remoteObjective = localIsGiver ? receiverObjective : giverObjective;
         trace("handoff", "selected", {
             id: sessionId,
             parcel: configuration.parcel.id,
+            giver: configuration.giverId,
+            phase: configuration.giverStartPhase,
+            estimatedMoves: configuration.estimatedMoves,
+            timeoutMs,
             start: tileKey(configuration.parcelStart),
             drop: tileKey(configuration.handoffTile),
             wait: tileKey(configuration.waitTile),
@@ -751,7 +880,7 @@ export class LLMExecutor {
         try {
             ({ completion } = this.objectives.request(
                 "handoff",
-                giverObjective
+                localObjective
             ));
         } catch (error) {
             return failure(
@@ -761,17 +890,34 @@ export class LLMExecutor {
             );
         }
 
+        // The partner's giver may be parked on its exit tile waiting for this,
+        // so report the local objective the way a remote one already reports.
+        void completion.then(result => {
+            try {
+                this.beliefs.partner.send("handoff_result", {
+                    id: result.objectiveId,
+                    role: localRole,
+                    status: result.status,
+                    reason: result.reason
+                });
+            } catch (error) {
+                dbg("parcel handoff result message failed", error);
+            }
+        });
+
         try {
             // The LLM only requests the action. Both BDI loops execute it.
             this.beliefs.partner.send("handoff", {
-                objective: receiverObjective
+                objective: remoteObjective
             });
-            const result = await this.waitForHandoff(
-                completion,
+            const result = await this.waitForHandoff({
+                localCompletion: completion,
+                localRole,
+                giverObjectiveId,
                 receiverObjectiveId,
-                configuration.parcel.id,
+                parcelId: configuration.parcel.id,
                 deadline
-            );
+            });
             trace("handoff", "completed", {
                 id: sessionId,
                 parcel: configuration.parcel.id,
@@ -780,10 +926,10 @@ export class LLMExecutor {
             });
             return result;
         } finally {
-            this.objectives.clear(giverObjectiveId, "parcel handoff cleanup");
+            this.objectives.clear(localObjectiveId, "parcel handoff cleanup");
             try {
                 this.beliefs.partner.send("handoff_clear", {
-                    id: receiverObjectiveId
+                    id: remoteObjectiveId
                 });
             } catch (error) {
                 dbg("parcel handoff cleanup message failed", error);

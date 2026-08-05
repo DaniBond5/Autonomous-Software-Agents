@@ -110,6 +110,13 @@ const planHandoff = (planner, intention, beliefs) => {
             );
         }
         if (intention.phase === "drop") {
+            // TEMP diagnostic: handoff putdown mismatch.
+            dbg(
+                beliefs,
+                `handoff drop parcel=${intention.parcelId}`
+                + ` carriesSelected=${carriesSelected}`
+                + ` carried=${JSON.stringify([...beliefs.parcels.carried.keys()])}`
+            );
             if (!carriesSelected) {
                 return {
                     status: "unreachable",
