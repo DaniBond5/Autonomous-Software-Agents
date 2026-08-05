@@ -59,8 +59,7 @@ The project is divided into two parts.
     \item BDI Agent: An autonomous agent that uses the Belief-Desire-Intention architecture to observe and perform actions in an environment.
     This architecture allows the agent to maintain a set of beliefs about the environment obtained through sensing. 
     Through the belief set, the architecture allows the agent to compute possible options (desires) along a utility score for them. The option with the best utility score is selected and performed, if possible.\\
-    The architecture prescribes that a loop is present, where options continue to be generated given new observations, and where the current Intention can be revised, as new information might tell the agent that
-    it cannot be performed anymore or that there's a better option to be performed.
+    The architecture prescribes that a loop is present, where options continue to be generated given new observations, and where the current Intention can be revised.
 
     \item LLM Agent: An agent that acts as a partner to the BDI agent. It performs like the BDI agent through a setup composed of API calls and prompts. It must be able to understand the rules of the game and the environment around it.\\
     It must also be able to understand, evaluate and perform missions delivered to it through the game chat, which can yield positive or negative results.
@@ -81,7 +80,6 @@ We will now go over the different classes implementing the agent's Belief Set.
 This class holds the agent's identity, its position and its score. For the agent's position, 
 we decided to gate non integer values, as they indicate that the agent is attempting to move. 
 This avoids inconsistent information about the position and avoids making wrong assumptions about a succesful move through the environment. 
-To balance this out, as soon as a move action is succesful, we update its position to the new coordinates.
 
 \subsection{Parcels}
 This class holds all the data structures and logic used to represent and update the agent's belief about the parcels it's carrying or that it has observed, during both past and current sensing events.
@@ -156,25 +154,27 @@ This map is the equivalent of the `Spawners' map, but it holds information about
 \section{Desires and Intention Loop}
 As prescribed by the BDI architecture, the agent consults its beliefs and computes a set of desires, along with a utility value representing their potential reward if accomplished.
 The best option, that is the one with the highest utility value, is chosen and it becomes the current intention.\\
-Periodically, the current intention gets revisioned with newer observations and game events, as we'll explain in another section.
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.5\textwidth]{BDI Loop.png}
+    \caption{The BDI Loop.}
+\end{figure}
 
 \subsection{Desires Generation}
-The generation of desires makes use of the agent's current and past observations, as described in the Belief section. The partner's shared information is also considered.
+The generation of desires makes use of the agent's current and past observations. The partner's shared information is also considered.
 \\During generation, the desires are stored in an array containing objects representing the desires and the information needed to perform, evaluate and compare them. 
 \\These objects contain the following fields:
 \begin{itemize}
     \item type: it identifies the action to be performed by a given desire. It's a simple string of the form `go\_pick\_up' or `go\_deliver'.
     \item target: the coordinates (x,y) of the desire's destination.
     \item utility: the utility value computed for the desire.
-    \item parcel\_id: for the desire of picking up percels, the parcels' id are also added to the object.
-    \item delivery\_distance: for the desire of delivering one or more parcels, the distance to the delivery coordinates, found in the target field, is added to the object.
 \end{itemize}
 
 We decided to develop a small, but efficient number of possible desires. We defined the following types of desires.
 \begin{itemize}
     \item go\_pick\_up: it defines the desire of picking up a parcel.
     \item go\_deliver: it defines the desire of deliverying the currently carried parcels.
-    \item go\_to\_spawner: this type of desire is used as an exploration desire. It is designed to be generated only when the agent currently doesn't have the option of either deliverying or picking up parcels.
+    \item go\_to\_spawner: this type of desire is used as an exploration option. It is designed to be generated only when the agent currently doesn't have the option of either deliverying or picking up parcels.
 \end{itemize}
 
 \subsubsection{Distances}
@@ -317,10 +317,7 @@ They also let each other know about their intentions, to avoid edge cases where 
 We also implemented a simple functionality that lets them choose which of the two should perform an intention and pick the one that is in the better position to efficiently perform it.
 \\To maximize overall team utility and prevent redundant efforts, the BDI and LLM agents communicate asynchronously using the game server's socket conncection.
 
-\section{Results and Conclusions}
+\section{Challenge Benchmarks and Conclusions}
 [Present the results of the project.]
-
-\section{Conclusions and future improvements}
-[Conclude the report and propose future developments.]
 
 \end{document}
