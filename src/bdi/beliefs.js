@@ -1033,6 +1033,8 @@ export class Beliefs {
                 case 'handoff_result':
                     if (this.partner.setHandoffResult(message)) {
                         traceCoordination("receive", message.kind, message);
+                        // Releases a giver parked on its exit tile, if any.
+                        objectives?.settleGiverHold(message);
                     }
                     return;
                 case 'handoff_clear':

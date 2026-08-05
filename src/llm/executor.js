@@ -849,12 +849,14 @@ export class LLMExecutor {
         const giverObjective = {
             ...sharedFields,
             id: giverObjectiveId,
+            peerObjectiveId: receiverObjectiveId,
             role: "giver",
             startPhase: configuration.giverStartPhase,
         };
         const receiverObjective = {
             ...sharedFields,
             id: receiverObjectiveId,
+            peerObjectiveId: giverObjectiveId,
             role: "receiver",
             startPhase: configuration.receiverStartPhase,
         };
@@ -887,6 +889,21 @@ export class LLMExecutor {
                     : "invalid local objective"}.`
             );
         }
+
+        // The partner's giver may be parked on its exit tile waiting for this,
+        // so report the local objective the way a remote one already reports.
+        void completion.then(result => {
+            try {
+                this.beliefs.partner.send("handoff_result", {
+                    id: result.objectiveId,
+                    role: localRole,
+                    status: result.status,
+                    reason: result.reason
+                });
+            } catch (error) {
+                dbg("parcel handoff result message failed", error);
+            }
+        });
 
         try {
             // The LLM only requests the action. Both BDI loops execute it.
