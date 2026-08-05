@@ -34,9 +34,9 @@
     \end{tabular}
     \and
     \begin{tabular}{c}
-        \textbf{Sasha Pektovic} \\
+        \textbf{Sasha Petkovic} \\
         {264689} \\
-        \href{mailto:sasha.pektovic@studenti.unitn.it}{sasha.pektovic@studenti.unitn.it}
+        \href{mailto:sasha.petkovic@studenti.unitn.it}{sasha.petkovic@studenti.unitn.it}
     \end{tabular}
 }
 \date{\vspace{-5ex}} % Adjust or remove to display date
@@ -318,6 +318,32 @@ We also implemented a simple functionality that lets them choose which of the tw
 \\To maximize overall team utility and prevent redundant efforts, the BDI and LLM agents communicate asynchronously using the game server's socket conncection.
 
 \section{Challenge Benchmarks and Conclusions}
-[Present the results of the project.]
+To give an evaluation of the performance of our agents, we decided to measure the BDI agent's performance by trying to replicate the environment found during the first challenge.
+The first challenge only involves the BDI agent. The agent has to simply collect as many points as possible in 5 minutes while competing with other agents.
+\\We ran three maps, a standard map with only the `classic' tiles, a map with unidirectional tiles, and a map with crates.
+For the first map, we paired it against 8 intelligent NPCs, with 15 maximum parcels, for the second, we paired it against 3 intelligent NPCs with 8 maximum parcels.
+For the third map, we decided to maintain the standard settings for the map, given the small space.
+\begin{table}[H]
+\centering
+\begin{minipage}{.45\linewidth}
+    \centering
+    \caption{BDI Only Performance}
+    \begin{tabular}{cc}
+        \toprule
+        \textbf{Level} & \textbf{Score} \\
+        \midrule
+        {26c1\_1} & {2097} \\
+        {26c1\_4} & {1804} \\
+        {crates\_one\_way} & {1273} \\
+        \bottomrule
+    \end{tabular}
+\end{minipage}
+\hfill
+\end{table}
+For the performance of the LLM agent, the lack of a standard benchmark made us choose not to report the results of a benchmark made up by us.
+We obviously tested both the functionality and performance of the LLM agent, both alone and while cooperating with the BDI agent, and we found the results satisfying.
+The LLM agent correctly understands the rules of the game, the missions given to it and it correctly performs actions in the environment.
+If its performance is a concern, we left instructions in our GitHub repo, and we apologise if we missed the presence of a standard benchmark to utilise.
+\\We believe that the project's requests were satisfied, and that the overall performance can be considered quite good.
 
 \end{document}
