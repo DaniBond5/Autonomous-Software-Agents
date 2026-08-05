@@ -246,7 +246,24 @@ These missions can assign reward multipliers for delivering stacks of parcels or
 These multipliers are applied if needed after the utility values are computed and before they're inserted into the desires array.
 
 \subsection{Intention Loop and Intention Revision}
-[Insert text explaining intention revision.]
+\subsubsection{Intention Loop}
+The intention loop serves as the continuous execution cycle of the BDI agent. 
+\\Upon receiving a sensing event from the game server, the agent updates its Beliefs. Next, it computes the utility values for all possible desires using the formulas established previously. 
+The desire yielding the highest utility score is selected as the agent's current Intention. 
+\\The agent has to then establish the plan, that is, the sequence of actions to perform to fulfill the intention. 
+To do this, the agent either utilises a PDDL solver or establishes a path through a BFS search. We will explain this decision in a later section of this report.
+
+\subsubsection{Intention Revision}
+Because the game environment is highly dynamic and competitive, blind commitment to a single plan is unfeasible. 
+Therefore, the agent continuously evaluates its active intention against incoming sensings and game events, this process is the Intention Revision. 
+Intention revision is triggered under two primary conditions:
+\begin{itemize}
+    \item Impossibility: The current intention is no longer viable. 
+    For example, if a rival agent picks up the target parcel, or if the path to a delivery tile becomes completely blocked by other agents, the current plan is instantly invalidated.
+    \item Suboptimality: A newer, significantly better opportunity arises. If a high-value parcel spawns nearby, the newly computed utility of picking it up might drastically outweigh the utility of the agent's current intention.
+\end{itemize}
+When a revision is triggered, the agent drops its current plan, adopts the new optimal desire as its intention, and generates a new plan to pursue it. 
+This ensures the agent remains both goal-oriented and highly reactive to the evolving state of the game.
 
 \section{Planning}
 [Describe the pathfinding and action planning.]
