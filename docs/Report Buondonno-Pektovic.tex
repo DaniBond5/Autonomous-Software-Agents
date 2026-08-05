@@ -293,8 +293,28 @@ Given that BFS alone couldn't solve this kind of problem, we find that relegatin
 \\We note that PDDL is also less flexible to changes in the environment or intention revision. 
 If a path needs to be redefined due to changes in the environment, such as new obstacles, or because of a change of the current intention, the agent has to sit and wait for the whole process again.
 
-\section{LLM Agent}
-[Describe the multi-agent communication protocol.]
+\section{LLM Agent and Communication}
+\subsection{LLM Agent Architecture}
+The LLM Agent operates as a complementary, reasoning partner alongside the BDI agent. 
+Rather than relying solely on hardcoded utility formulas and PDDL planning, the LLM agent leverages OpenAI's API to interpret game states, evaluate natural-language events, and decide optimal actions.
+It is also able to interpret, evaluate and perform missions given to it through the in game chat. It can also communicate with the BDI agent.
+The LLM Agent's architecture performs these operations in order to function.
+\begin{enumerate}
+    \item State Serialization and Prompting: On each sensing tick the agent serializes its localized belief state, including grid coordinates, carried parcel rewards, visible decay rates, and map obstacles into a structured prompt context.
+    \item Action Reasoning: The system prompt embeds Deliveroo.js game rules, movement constraints, and action formats. 
+    The LLM outputs structured responses, indicating its own reasoning and computations, if needed. It then performs the required actions to fulfill its own intentions.
+    \item Mission Evaluation: As mentioned earlier, missions can be assigned from the server via game chat.
+    They present side objectives with variable positive or negative rewards. 
+    The LLM agent parses these natural language announcements, evaluates the risk versus reward ratio based on its and the game's current status, and decides whether to accept, delegate, or ignore the mission.  
+    \item Robustness and Fallback: To handle API latency or invalid LLM generations, the agent validates output paths using the BFS/PDDL planner before execution, falling back to basic deterministic actions if a timeout occurs.
+\end{enumerate}
+
+\subsection{Multi-Agent Communication Protocol}
+The BDI agent and the LLM Agent form a team. They communicate with each other, adding information to each other's belief and share other informations.
+\\The LLM agent can let the BDI agent know about some ongoing mission, active multipliers or potential negative rewards for specific actions.
+They also let each other know about their intentions, to avoid edge cases where both pursue the same objective. 
+We also implemented a simple functionality that lets them choose which of the two should perform an intention and pick the one that is in the better position to efficiently perform it.
+\\To maximize overall team utility and prevent redundant efforts, the BDI and LLM agents communicate asynchronously using the game server's socket conncection.
 
 \section{Results and Conclusions}
 [Present the results of the project.]
