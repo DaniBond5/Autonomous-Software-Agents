@@ -18,6 +18,16 @@ const success = text => ({ ok: true, text });
 const failure = text => ({ ok: false, text });
 
 const COORDINATION_POLL_MS = 100;
+
+// Walking is only part of a handoff: planning, sensing ticks and the partner's
+// own loop all cost wall time that does not scale with movementDurationMs. An
+// observed run walked 12 tiles in about 3 s where a move was nominally 50 ms,
+// roughly 5x per move; estimatedMoves sums both agents even though they move in
+// parallel, which absorbs about half of that, so 3x covers the gap. The floor
+// carries short exchanges, whose cost is almost entirely coordination: at 50 ms
+// a move the previous additive map-size slack was worth under a second.
+const HANDOFF_TIMEOUT_MARGIN = 3;
+const HANDOFF_MIN_TIMEOUT_MS = 10_000;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Only digits, spaces, parentheses and the four operators are ever parsed. */
@@ -229,6 +239,12 @@ function selectHandoffConfiguration(beliefs) {
             );
             if (!selectedDelivery) continue;
 
+            // The receiver reaches its wait tile, steps onto the handoff tile
+            // to pick the parcel up, and only then walks to the delivery.
+            const receiverMoves = wait.distance
+                + 1
+                + selectedDelivery.distance;
+
             configurations.push({
                 giverId: candidate.giverId,
                 receiverId: candidate.receiverId,
@@ -241,10 +257,7 @@ function selectHandoffConfiguration(beliefs) {
                 waitTile: copyPoint(wait.tile),
                 exitTile: copyPoint(exitTile),
                 deliveryTile: copyPoint(selectedDelivery.delivery),
-                estimatedMoves: giverApproach
-                    + wait.distance
-                    + selectedDelivery.distance
-                    + 4,
+                estimatedMoves: giverApproach + receiverMoves + 4,
             });
         }
     }
@@ -802,10 +815,12 @@ export class LLMExecutor {
             );
         }
 
-        const timeoutMoves = configuration.estimatedMoves
-            + world.width
-            + world.height;
-        const timeoutMs = timeoutMoves * world.movementDurationMs();
+        const estimatedMs = configuration.estimatedMoves
+            * world.movementDurationMs();
+        const timeoutMs = Math.max(
+            estimatedMs * HANDOFF_TIMEOUT_MARGIN,
+            HANDOFF_MIN_TIMEOUT_MS
+        );
         const startedAt = Date.now();
         const deadline = startedAt + timeoutMs;
         const sessionId = `${this.beliefs.me.id}:${startedAt}`;
@@ -850,6 +865,8 @@ export class LLMExecutor {
             parcel: configuration.parcel.id,
             giver: configuration.giverId,
             phase: configuration.giverStartPhase,
+            estimatedMoves: configuration.estimatedMoves,
+            timeoutMs,
             start: tileKey(configuration.parcelStart),
             drop: tileKey(configuration.handoffTile),
             wait: tileKey(configuration.waitTile),
