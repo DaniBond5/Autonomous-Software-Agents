@@ -124,6 +124,32 @@ export function normalizeActionResultEntry(raw) {
     return entry;
 }
 
+/**
+ * Action results carry no id, so a lone entry sitting on the agent's own tile
+ * is attributed to the parcel the intention was acting on.
+ *
+ * The trade-off: if the intended parcel expired and a different one sat on that
+ * tile, the wrong id is recorded for one tick, until onSensing rewrites
+ * `carried` from first-hand observation. That is preferable to an absent
+ * belief, which stalls the handoff protocol outright.
+ * @returns {string | null}
+ */
+function resolveResultParcelId(entry, entryCount, mePos, intendedParcelId) {
+    if (typeof entry?.id === 'string') return entry.id;
+
+    // More than one entry, or a mismatched tile, makes the guess unsound.
+    if (entryCount !== 1
+        || typeof intendedParcelId !== 'string'
+        || !intendedParcelId.trim()
+        || !isFinitePosition(entry)
+        || !isFinitePosition(mePos)
+        || entry.x !== mePos.x
+        || entry.y !== mePos.y) {
+        return null;
+    }
+    return intendedParcelId.trim();
+}
+
 class Parcels {
     constructor() {
         /** @type {Map<string, import("@unitn-asa/deliveroo-js-sdk").IOParcel>} */
@@ -189,18 +215,22 @@ class Parcels {
      * @param {string} meId
      * @param {{x:number,y:number}} mePos
      * @param {boolean} [isDelivery=false]
+     * @param {string} [intendedParcelId] parcel the intention was acting on
      */
-    reconcileActionOutcome(outcome, meId, mePos, isDelivery = false) {
+    reconcileActionOutcome(outcome, meId, mePos, isDelivery = false, intendedParcelId) {
         const actionType = outcome?.action?.action;
         if (outcome?.status !== 'succeeded'
             || (actionType !== 'pickup' && actionType !== 'putdown')
             || !Array.isArray(outcome.result)) return;
 
+        const entries = outcome.result.map(normalizeActionResultEntry);
+
         if (actionType === 'putdown') {
-            for (const rawParcel of outcome.result) {
-                const resultParcel = normalizeActionResultEntry(rawParcel);
-                if (typeof resultParcel?.id !== 'string') continue;
-                const id = resultParcel.id;
+            for (const resultParcel of entries) {
+                const id = resolveResultParcelId(
+                    resultParcel, entries.length, mePos, intendedParcelId
+                );
+                if (!id) continue;
                 const carriedParcel = this.carried.get(id);
                 this.visible.delete(id);
                 this.known.delete(id);
@@ -226,11 +256,12 @@ class Parcels {
             return;
         }
 
-        for (const rawParcel of outcome.result) {
-            const resultParcel = normalizeActionResultEntry(rawParcel);
-            if (!resultParcel || typeof resultParcel.id !== 'string') continue;
+        for (const resultParcel of entries) {
+            const id = resolveResultParcelId(
+                resultParcel, entries.length, mePos, intendedParcelId
+            );
+            if (!id) continue;
 
-            const id = resultParcel.id;
             const storedParcel = this.visible.get(id)
                 ?? this.known.get(id)
                 ?? this.carried.get(id);
@@ -256,7 +287,8 @@ class Parcels {
             }
 
             delete parcel.observedAt;
-            this.carried.set(id, { ...parcel, carriedBy: meId });
+            // The result may not carry the id, so restate the resolved one.
+            this.carried.set(id, { ...parcel, id, carriedBy: meId });
         }
     }
 
