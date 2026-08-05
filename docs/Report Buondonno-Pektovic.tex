@@ -180,8 +180,9 @@ We decided to develop a small, but efficient number of possible desires. We defi
 \subsubsection{Distances}
 To compute the utility values of our desires, we take into account the distances to reach the desires' target tiles. This is important as the game server can enable a parcel reward decay over time.
 This must be taken into account when evaluating which desire to perform, as further targets lead to likely smaller rewards as the parcels the agent is carrying and the parcels on the ground progressively lose more and more value.
-\\To compute these distances, we've made use of the Breadth First Search (BFS). We opted for a BFS search instead of heuristical search algorithms such as A* due to the fact that movement costs are all equal.
-When costs are equal, a BFS search is optimal. This allows the agent to both find the shortest path to a target and to compute the utility values under optimal assumptions.
+\\To compute these distances, we've made use of the Breadth First Search (BFS). Since all actions costs are equal, this search yields optimal results, making the obtained distances the shortest path distances to a destination.
+We further justify this choice over other options such as heuristical search algorithms in a later section of this report.
+
 
 \subsubsection{Pick-up Utility}
 This desire can be generated when the agent knows about at least one parcel that isn't currently being carried by anyone.
@@ -270,25 +271,24 @@ This ensures the agent remains both goal-oriented and highly reactive to the evo
 Once an intention is established by the agent, the next step is planning its execution. A plan is a sequence of steps that concludes with the fulfillment of the plan's objective.
 \\To establish a plan, we have different options. The first is the more traditional solution for artificial intelligence planning found in the PDDL language.
 Given a domain, with a set of rules, states and possible actions for all the states, it allows to search and find a plan that satisfies a given task, if it's possible.
-\\The second option is less traditional and more standard programming oriented, as we simply make use of search algorithms to find a path to a desire's target and execute its desired action.
-As mentioned earlier, we used a BFS search given its optimality guarantees in environments with equal costs.
+\\The second option is less traditional and more standard programming oriented, as we simply make use of a search algorithm to find a path to a desire's target and execute its action.
 \\We decided to use PDDL only when strictly needed, while we `defaulted' to using a BFS search for all other cases. We will explain in the following sections our motivations and use of them.
 
 \subsection{BFS Search and Planning}
-As mentioned earlier, for all the cases where PDDL is not strictly needed we opted to use our version of a BFS search.
+For all the cases where PDDL is not strictly needed we opted to use our version of a BFS search.
 \\The Breadth First Search (BFS) is a classic search algorithm that can be used with graphs or grid like environments.
 It performs a search by expanding all nodes in the current depth. Once every node in the current depth has been explored, the search proceeds to the next depth. This process continues until the goal is found.
 As mentioned earlier, this search is optimal for domains where the costs for all actions are equal. This allowed us to use our BFS algorithm to compute shortest path distances for better utility value computations.
 \\Once an intention is established, the agent uses the BFS search to find the shortest path to the intention's target. Once the path is found, the agent follows it and, once it has reached the target destination, performs the action.
 \\Using this search, the BDI agent ended up being very fast and efficient. This is not the case for PDDL planning. 
 Also, we note that this solution is much more flexible to intention revision, or changes in the environment that require a different path to be taken to fulfill the current intention.
-As computing another BFS search is much faster than going through the PDDL solver.
+This is due to the fact that computing another BFS search is much faster than going through the PDDL solver.
 
 \subsection{PDDL}
 We used PDDL for planning only in cases where it was strictly needed, as its performance is greatly worse than the one we implemented through a simple search. 
 \\The slower performance, especially in our case, is given by the fact that to find a plan, PDDL goes through its own solver. This process is slower than simply performing a search.
 \\We decided to use PDDL for maps with crates. Specifically, when an agent encounters a crate in its path it calls the PDDL solver to find a path that allows the agent to move towards its current intention's target.
-In these cases, the agent stops for a some seconds, waiting for the solver to receive the problem's details and for it to send back the satisfying plan.
+In these cases, the agent stops for some seconds, waiting for the solver to receive the problem's details and for it to send back the satisfying plan.
 Given that BFS alone couldn't solve this kind of problem, we find that relegating PDDL for this use case alone is a satisfying solution, as the agent performs very efficiently in the majority of game worlds.
 \\We note that PDDL is also less flexible to changes in the environment or intention revision. 
 If a path needs to be redefined due to changes in the environment, such as new obstacles, or because of a change of the current intention, the agent has to sit and wait for the whole process again.
@@ -296,7 +296,7 @@ If a path needs to be redefined due to changes in the environment, such as new o
 \section{LLM Agent and Communication}
 \subsection{LLM Agent Architecture}
 The LLM Agent operates as a complementary, reasoning partner alongside the BDI agent. 
-Rather than relying solely on hardcoded utility formulas and PDDL planning, the LLM agent leverages OpenAI's API to interpret game states, evaluate natural-language events, and decide optimal actions.
+Rather than relying solely on hardcoded utility formulas and planning, the LLM agent leverages OpenAI's API to interpret game states, evaluate natural-language events, and decide optimal actions.
 It is also able to interpret, evaluate and perform missions given to it through the in game chat. It can also communicate with the BDI agent.
 The LLM Agent's architecture performs these operations in order to function.
 \begin{enumerate}
@@ -313,6 +313,7 @@ The LLM Agent's architecture performs these operations in order to function.
 The BDI agent and the LLM Agent form a team. They communicate with each other, adding information to each other's belief and share other informations.
 \\The LLM agent can let the BDI agent know about some ongoing mission, active multipliers or potential negative rewards for specific actions.
 They also let each other know about their intentions, to avoid edge cases where both pursue the same objective. 
+\\Some missions may require strict cooperation between the two agents. The LLM agent is able to send simple instructions to the BDI agent, through either target coordinates or simple instructions.
 We also implemented a simple functionality that lets them choose which of the two should perform an intention and pick the one that is in the better position to efficiently perform it.
 \\To maximize overall team utility and prevent redundant efforts, the BDI and LLM agents communicate asynchronously using the game server's socket conncection.
 
