@@ -81,13 +81,20 @@ function normalizeHandoffObjective(raw) {
     };
 }
 
-// A targeted putdown moves exactly one parcel, so where it landed identifies
-// it when the server answers without ids.
-const putdownMatchesPosition = (entries, currentPosition) =>
-    entries.length === 1
-    && isIntegerPoint(currentPosition)
-    && samePosition(entries[0], currentPosition)
-    && !entries[0].carriedBy;
+// A targeted action moves exactly one parcel, so the tile it ended up on
+// identifies it when the server answers without ids. The two actions differ
+// only in carriage: a putdown leaves the parcel uncarried on that tile, while
+// a pickup leaves it carried by whoever made the call, which is this agent.
+const matchesByPosition = (entries, actionType, currentPosition) => {
+    if (entries.length !== 1
+        || !isIntegerPoint(currentPosition)
+        || !samePosition(entries[0], currentPosition)) {
+        return false;
+    }
+    if (actionType === "putdown") return !entries[0].carriedBy;
+    if (actionType === "pickup") return Boolean(entries[0].carriedBy);
+    return false;
+};
 
 const resultHasParcel = (result, parcelId, actionType, currentPosition) => {
     if (!Array.isArray(result)) return false;
@@ -99,12 +106,9 @@ const resultHasParcel = (result, parcelId, actionType, currentPosition) => {
     if (identified.length > 0) {
         return identified.some(entry => entry.id === parcelId);
     }
-    if (actionType !== "putdown"
-        || !putdownMatchesPosition(entries, currentPosition)) {
-        return false;
-    }
+    if (!matchesByPosition(entries, actionType, currentPosition)) return false;
 
-    trace("objective", "putdown-by-position", {
+    trace("objective", `${actionType}-by-position`, {
         parcel: parcelId,
         at: `${currentPosition.x},${currentPosition.y}`
     });
