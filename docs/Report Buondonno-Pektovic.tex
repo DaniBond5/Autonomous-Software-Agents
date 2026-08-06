@@ -69,69 +69,48 @@ We will go through the data structures used, the strategies we decided to implem
 We will then explain the LLM's agent structure and operations. To conclude we will give some brief results and our thoughts for further improving our solutions.
 
 \section{Belief}
-In the Belief-Desire-Intention architecture, an agent's belief set represents its observations and beliefs over the environment. 
-The term belief is not used casually, as what's `contained' in its belief set isn't a ground truth, but what the agent has deducted from both present and past observations, which might not be true anymore.
-\\In the Deliveroo game, observations are done through sensing events propagated by the game server. 
-As we will see, in our solution we try to keep the most up to date informations and forget what we confirm to be outdated, 
-so priority is given to the information we're most confident about.
-We will now go over the different classes implementing the agent's Belief Set.
+In the Belief-Desire-Intention architecture, an agent's belief set represents what it believes to be true about the environment. 
+The term belief is not used casually: what the set contains is not ground truth, but what the agent has deduced from present and past observations, which may no longer hold.
+As we will see, in our solution we try to keep the most up to date informations and forget what we confirm to be outdated, so priority is given to the information we're most confident about.
+\\We will now go over the different classes implementing the agent's Belief Set.
+Every class is instantiated per agent rather than shared at module level, which is what allows the BDI and the LLM agent to run in the same process.
 
-\subsection{Me}
-This class holds the agent's identity, its position and its score. For the agent's position, 
-we decided to gate non integer values, as they indicate that the agent is attempting to move. 
-This avoids inconsistent information about the position and avoids making wrong assumptions about a succesful move through the environment. 
+\subsection{Me and Agents}
+The Me class holds the agent's identity, its position and its score.
+For the agents' positions, we must consider when gating or considering fractional positions, as they indicate that an agent is attempting to move or is in the middle of one. 
+For the agent itself, we gate fractional positions, avoiding inconsistent information about our own position and making wrong assumptions about a move through the environment.
+\\The class Agents holds the latest observed state of every other agent, indexed by id.
+For this class we save fractional positions because they tell us that two tiles are occupied rather than one.
+In fact, a stationary agent occupies only one tile, while a moving agent occupies both its current tile and the tile it's attempting to move towards.
 
 \subsection{Parcels}
-This class holds all the data structures and logic used to represent and update the agent's belief about the parcels it's carrying or that it has observed, during both past and current sensing events.
-To hold these informations, we use three maps.
-
-\subsubsection{Visible}
-In this map we store all the parcels the agents saw during the latest sensing, indexed by their id.
-This map is rebuilt every time the agent performs sensing.
-It is particularly useful to recognise which parcels the agent is most confident about, as it can currently see them.
-
-\subsubsection{Known}
-This map contains all `known' parcels, indexed by their id. A known parcel is a parcel that has been observed through previous sensings.
-Along with the parcels data, we store a timestamp indicating when they've been observed. 
-This is particularly useful for computing their utility by estimating their decayed value, if parcel reward decay is currently enabled by the server.
+This class represents what the agent believes about the parcels it carries or has observed, using three maps indexed by parcel id.
+\\In \textbf{Visible} we store all the parcels the agents saw during the latest sensing and it is rebuilt every time the agent performs sensing.
+These observed parcels are the ones the agent is most confident about, as it can currently see them.
+\\\textbf{Known} contains free parcels observed in the past, together with the time of their last observation.
+This timestamp is used to compute estimate parcel reward when decay is active.
 \\To maintain this data structure as accurate as possible, whenever a known parcel's location is observed, and the parcel is not present, it is removed and forgotten by the agent.
-If the agent has a partner, this map also holds the information of the parcels reported by the partner.
-
-\subsubsection{Carried}
-This simple map holds the information about the parcels the agent's currently carrying, indexed by their id.
+If the agent has a partner, this map also holds the information of the parcels reported by the partner. A report does not overwrite an already known parcel.
+\\\textbf{Carried} holds the parcels the agent's currently carrying. 
+It is updated through sensing and through confirmed pickup and putdown actions.
 
 \subsection{Crates}
-This class is specifically designed to represent the agent's beliefs about the crates in the map, if present, and to update such informations.
-A `known' map is also used here, it works the same way as for the parcels, only this time it stores crates information.
-We also made use of a `byPosition' map as a support structure to make operations easier to code and more efficient, as it indexes crates by their position string.
-
-\subsection{Agents}
-This class holds the agent's beliefs about the other agents perceived in the game environment and the logic to update them.
-We used a map to store these informations.
-\subsubsection{Others}
-This map contains the information about the agents perceived through the latest sensing event, indexed by their id.
-\\During the update, we store their positions regardless if they're an integer or fractional.
-This is done on purpose as a fractional coordinate tells the agent that the rival agent is attempting to move, so two tiles are blocked instead of one at that moment.
-\\In fact, if a rival agent is not moving, we only consider its current position as blocked. If it is attempting to move we instead consider its current position and the position its trying to move to as blocked.
+This class is specifically designed to represent the agent's beliefs about the crates in the map, if present.
+A \textbf{Known} map is also used here, it works the same way as for the parcels, only this time it stores crates.
+We also made use of a \textbf{byPosition} map, indexed by a coordinate string.
+\textbf{Known} remains the main belief representation, while the positional index allows to avoid repeatedly scanning all known crates during planning.
 
 \subsection{Partner}
-This class is designed to represent and handle the information about the agent's partner, if there is one. 
-It also holds the information the agent might want to share with its partner.
-\\In particular the two agents share the information about the parcels they're currently carrying, that they're currently observing and the parcel they want to commit to.
-This helps avoid cases where both agents end up pursuing the same parcel, and it also allows them to evaluate which of the two should pursue a given parcel.
-The agents can in fact claim a parcel for their own by first evaluating if they're in a better spot to take it compared to the partner.
+This class stores the latest information received from the teammate and manages the data exchanged between the two agents. 
+The shared state includes position, carried parcel ids, carried count and carried reward. 
+The agents also exchange directly observed free parcels and announce the parcel they are currently pursuing.
+Before committing to a pickup, an agent compares its distance to the parcel with the distance announced by the partner and yields when the partner is closer.
+Ties are resolved through a deterministic ordering of the agent ids.
+Their communication is overhead free as they only send new information to each other, avoiding duplicate information.
 
 \subsection{World}
-This class holds the agent's beliefs about the game's world.
-It stores the data regarding the game's map, configuration and metadata sent out by the server upon connecting or when a change about the config is made.
-It also contains the set of visible positions observed by the agent throug the latest sensing event.
-\\The most notable data structures in this class are the following.
-
-\subsubsection{Parcel Reward Decay Frequency}
-In order to make precise and useful utlity value computations for both parcel pickups and deliveries, we make use of two things.
-The decay interval given by the server, stored in milliseconds, and the movement duration, also given by the server through the onConfig sensing event.
-With these, we compute a `decay per move' value, which is a good estimate for the reward loss during one movement.
-\\We use the following formula.
+This class stores the map, the current configuration, the positions covered by the latest sensing event, and the known spawner and delivery tiles.
+\\An important derived quantity is \textbf{decayPerMove}, which expresses reward decay in terms of movement cost.
 \begin{equation*}
     decayPerMove=
     \begin{cases}
@@ -139,133 +118,124 @@ With these, we compute a `decay per move' value, which is a good estimate for th
         0 & \text{otherwise}
     \end{cases}
 \end{equation*}
+This conversion allows pickup and delivery utilities to estimate reward loss directly from shortest path length. 
+The movement duration is also used separately to express how many movements have passed since a spawner was last observed.
+\\Each spawner and delivery tile stores the time it was last observed and whether it belongs to a topology that supports a repeatable pickup-delivery cycle.
+This distinction matters on maps with one way regions: a tile may be reachable while leaving the agent unable to return to a useful spawn or delivery area.
+These delivery tiles are preferred during deliberation, while other reachable delivery tiles remain available as a fallback. 
+Exploration is more conservative and considers only spawners from which an operational delivery can still be reached.
 
-\subsubsection{VisiblePositions}
-This set contains all visible positions through the latest sensing event.
+\section{Action Based Belief Revision}
+Beliefs are revised not only through sensing, but also through the confirmed outcome of actions. 
+Waiting for a later observation would leave the next planning cycle using a state that is already known to be outdated.
+After a successful movement, the integer position is recorded immediately. 
+Pickup and putdown outcomes revise the visible, known and carried parcel maps, while a successful crate push updates both crate indexes. 
+These revisions are applied only after the action reports success.
+Sensing events remain authoritative and can correct the local state.
 
-\subsubsection{Spawners}
-This map contains all known spawner tiles, a timestamp indicating when they've been last observed, and a boolean indicating if an operational delivery tile can be reached from each one of them. These values are indexed by a string indicating their coordinates.
-\\An operational delivery tile is one that, when reached, doesn't lead to a deadlock.
-We added this boolean to deal with edge cases in some maps where some spawner or delivery tiles led to a deadlock once reached. This makes the agent avoid going to deliveries or spawners that would end its match.
-
-\subsubsection{Deliveries}
-This map is the equivalent of the `Spawners' map, but it holds information about the known delivery tiles, paired with a boolean indicating if an operational spawner can be reached from there.
+\section{Evidence Based Belief Revision}
+The belief state preserves the latest information, it does not make use of histories or probabilistic values.
+Other agents are represented only by the latest sensing, no future trajectories are predicted.
+Parcels and crates are treated differently, as their last known positions remain useful outside the current field of view.
+They are retained until direct observation contradicts the belief, an action outcome revises it, or, for parcels, the estimated reward becomes negative.
+This is an intentional tradeoff. A predictive model could produce an incorrect extrapolation that can suppress valid intentions. 
 
 \section{Desires and Intention Loop}
-As prescribed by the BDI architecture, the agent consults its beliefs and computes a set of desires, along with a utility value representing their potential reward if accomplished.
-The best option, that is the one with the highest utility value, is chosen and it becomes the current intention.\\
-\begin{figure}[htbp]
+\begin{figure}[H]
     \centering
     \includegraphics[width=0.5\textwidth]{BDI Loop.png}
     \caption{The BDI Loop.}
 \end{figure}
-
-\subsection{Desires Generation}
-The generation of desires makes use of the agent's current and past observations. The partner's shared information is also considered.
-\\During generation, the desires are stored in an array containing objects representing the desires and the information needed to perform, evaluate and compare them. 
-\\These objects contain the following fields:
-\begin{itemize}
-    \item type: it identifies the action to be performed by a given desire. It's a simple string of the form `go\_pick\_up' or `go\_deliver'.
-    \item target: the coordinates (x,y) of the desire's destination.
-    \item utility: the utility value computed for the desire.
-\end{itemize}
-
-We decided to develop a small, but efficient number of possible desires. We defined the following types of desires.
+During every BDI iteration, the agent generates desires that are currently achievable from its beliefs.
+Each desire contains a type, a target, an estimated utility and the identifiers required for planning. 
+\\The agent supports three autonomous desire types:
 \begin{itemize}
     \item go\_pick\_up: it defines the desire of picking up a parcel.
     \item go\_deliver: it defines the desire of deliverying the currently carried parcels.
     \item go\_to\_spawner: this type of desire is used as an exploration option. It is designed to be generated only when the agent currently doesn't have the option of either deliverying or picking up parcels.
 \end{itemize}
+The LLM layer may also introduce temporary external objectives. They enter the same deliberation loop as standard desires, while their interpretation and creation are described in the LLM section.
 
-\subsubsection{Distances}
-To compute the utility values of our desires, we take into account the distances to reach the desires' target tiles. This is important as the game server can enable a parcel reward decay over time.
-This must be taken into account when evaluating which desire to perform, as further targets lead to likely smaller rewards as the parcels the agent is carrying and the parcels on the ground progressively lose more and more value.
-\\To compute these distances, we've made use of the Breadth First Search (BFS). Since all actions costs are equal, this search yields optimal results, making the obtained distances the shortest path distances to a destination.
-We further justify this choice over other options such as heuristical search algorithms in a later section of this report.
+\subsection{Desires Generation}
+Utility estimation uses shortest path distances through a BFS search. 
+A BFS from the current position provides the distance to every reachable pickup, delivery and exploration candidate.
+For each possible pickup tile, another search evaluates following routes towards available delivery tiles. 
+This lets the agent estimate the complete cost of collecting and later delivering the parcels.
+\\Let $C$ be the set of currently carried parcels, $b$ a batch of parcels located on the same tile, and
+$\delta$ the estimated reward decay per movement. For a set of parcels $S$ delivered after $D$ movements,
+we define first the estimated reward for delivering a set of parcels after a given amount of movements.
+\begin{equation*}
+    R(S,D) = \sum_{p \in S} \max(0, r_p - \delta D) \cdot m_{parcel}(r_p)
+\end{equation*}
+Where $r_p$ is the current estimated reward for $p$. The parcel multiplier is equal to one when no strategy is active.
 
+\subsubsection{Pickup Utility}
+A pickup action collects every parcel on the current tile, so parcels sharing the same coordinates are evaluated as a batch. 
+A batch is eligible only when:
+\begin{itemize}
+    \item its tile is reachable.
+    \item the amount of parcels it contains is allowed by the carry stack strategy.
+    \item the agent's partner hasn't claimed it.
+    \item at least one reachable delivery tile from the batch's position produces a positive expected utility.
+\end{itemize}
+For batch $b$ and delivery tile $d$, the total distance is:
+\begin{equation*}
+    D(b,d) = d(agent,b) + d(b,d)
+\end{equation*}
+The pickup utility is:
+\begin{equation*}
+    U_{pickup}(b,d) = \frac{[R(b,D) + R(C,D)] \cdot m_{stack}(\lvert C \rvert + \lvert b \rvert) \cdot m_{delivery}(d)}{\max(1,D)}
+\end{equation*}
+The reward of the carried parcels is included because they also decay while the agent reaches the batch and then the delivery tile.
+Since all reachable delivery candidates are evaluated, the selected delivery is not necessarily the closest one.
+For each eligible batch, the delivery tile producing the highest positive utility is chosen, and the resulting pickup desire is added to the desire set.
 
-\subsubsection{Pick-up Utility}
-This desire can be generated when the agent knows about at least one parcel that isn't currently being carried by anyone.
-\\To generate this desire, we compute an utility score for each batch of parcels, a batch can be composed by only one parcel. 
-We don't exclude this computation to a single parcel as multiple parcels can lay on a single tile, forming a batch whose utility score must be a sum of the utility of all its parcels. In addition, a pickup action picks up all the parcels in a given tile.
-\\To compute the utility value of batches, we decided to also take into account the distance to deliver the picked up parcels from their location.
-\\The distance used is the following.
+\subsubsection{Delivery Utility}
+This desire can be generated if the agent is carrying at least 1 parcel and the current stack strategy allows delivery.
+For a delivery tile $d$ at distance $D$, its utility is:
 \begin{equation*}
-    totalDistance = distanceToBatch + distanceAfterPickup
+    U_{delivery}(d) = \frac{R(C,D) \cdot m_{stack}(\lvert C \rvert) \cdot m_{delivery}(d)}{\max(1,D)}
 \end{equation*}
-Where `distanceAfterPickup' is the distance to the closest delivery tile with respect to the batch's location.
-\\This allows the agent to have an accurate and complete estimation of the whole process, 
-it effectively gives it a prediction of the potential reward for picking up and then delivering one or more parcels.
-It also allows the agent to have a good measurement of comparison for utility of all the batches it can consider to pickup.
-\\A batch's pickup utility score is given by the following formula.
-\begin{equation*}
-    batchPickupUtility = \sum_{p \in batch} \max(0, p.reward) - (decayPerMove * totalDistance)
-\end{equation*}
-It computes an estimation of the batch's reward once it has been picked up and the delivery tile is reached, taking decay into account.
-\\To compute the pickup action's utlity, we also take into account the estimated reward of the parcels the agent is currently carrying,
-as their reward is gonna decay throughout the whole process.
-\\The carried parcels' estimated reward is the following.
-\begin{equation*}
-    carriedReward = \sum_{p \in carried} \max(0, p.reward) - (moveDecay * distanceToDelivery)
-\end{equation*}
-For each pickup action option utility, we then use this formula.
-\begin{equation*}
-    pickupUtility = \frac{carriedReward + batchPickupUtility}{\max(1, totalDistance)}
-\end{equation*}
-The pickup option that gets inserted into the desires array is the one with the highest utility value.
-
-\subsubsection{Put-down Utility}
-This desire can be generated if the agent is currently carrying at least 1 parcel.
-\\To generate this desire, we scan through all the delivery tiles in the game map. For each delivery tile, we compute the shortest path's distance to it, if it's reachable.
-If the given delivery tile is reachable, we compute its utility value.
-\\We compute the delivery utility with the following formula:
-
-\begin{equation*}
-    deliveryUtility = \frac{expectedDeliveryReward}{\max(1, distanceToDelivery)}
-\end{equation*}
-Where `expectedDeliveryReward' is the expected reward for delivering the parcels currently carried by the agent taking distance and reward decay into account.
-To compute this expected reward, we iterate through all carried parcels and compute an estimation of their decayed reward value once the agent reaches the delivery tile.
-\\The formula is the following.
-\begin{equation*}
-    expectedDeliveryReward = \sum_{p \in carried} \max(0, p.reward) - (moveDecay * distanceToDelivery)
-\end{equation*}
+Only delivery candidates with positive expected utility are retained. 
+Operational delivery tiles are prioritised because they allow the agent to continue a repeatable pickup-delivery cycle.
+When no operational delivery is available, all reachable deliveries act as a fallback.
 
 \subsubsection{Exploration Utility}
-This desire is generated only when there is no other desirable action for the agent to perform. 
-This happens when it has no parcels to deliver or to pickup, so the only option is to explore towards spawner tiles currenlty out of vision.
-\\To compute the utility value of this desire, we iterate through the out of vision spawners, giving priority to operational ones. We then compute their exploration utility value.
-\\This value is computed with the following formula.
+This desire is generated only when no valid pickup and delivery desires can be generated.
+For this utility we only consider spawners that are reachable, outside of the current sensing area and connected to an operational delivery tile.
+\\Their utility is computed with the following formula.
 \begin{equation*}
-    spawnerExplorationUtility = movesSinceCheck / \max(1, Distance)
+    U_{exploration}(s) = \frac{movesSinceCheck(s)}{\max(1,d(\text{agent},s))}
 \end{equation*}
-Where `movesSinceCheck' is the amount of moves since the last time the agent saw the given spawner tile. 
-This allows the agent to prioritise spawners it hasn't checked recently, as it's likely their state has changed.
+This formula favours spawners that have not been observed recently while still paying mind to their distance. 
+Exploration may also be generated when the agent carries parcels but no valid delivery is currently available, preventing it from remaining indefinitely idle.
 
-\subsubsection{Multipliers}
-The game server can assign missions to individual agents, teams or all players. 
-These missions can assign reward multipliers for delivering stacks of parcels or for delivering in a certain delivery tile, among other cases.
-These multipliers are applied if needed after the utility values are computed and before they're inserted into the desires array.
+\subsection{Intention Loop}
+The intention loop continuously alternates deliberation, planning, execution and belief revision.
+During each iteration, the agent:
+\begin{enumerate}
+    \item generates the desires that remain valid under the latest beliefs and active strategies.
+    \item filters desires that are temporarily obstructed or currently unplannable.
+    \item revises or selects the current intention.
+    \item plans and executes the intention's action.
+    \item reconciles its outcome with the beliefs, planning state and any external objective.
+\end{enumerate}
 
-\subsection{Intention Loop and Intention Revision}
-
-\subsubsection{Intention Loop}
-The intention loop serves as the continuous execution cycle of the BDI agent. 
-\\Upon receiving a sensing event from the game server, the agent updates its Beliefs. Next, it computes the utility values for all possible desires using the formulas established previously. 
-The desire yielding the highest utility score is selected as the agent's current Intention. 
-\\The agent has to then establish the plan, that is, the sequence of actions to perform to fulfill the intention. 
-To do this, the agent either utilises a PDDL solver or establishes a path through a BFS search. We will explain this decision in a later section of this report.
-
-\subsubsection{Intention Revision}
-Because the game environment is highly dynamic and competitive, blind commitment to a single plan is unfeasible. 
-Therefore, the agent continuously evaluates its active intention against incoming sensings and game events, this process is the Intention Revision. 
-Intention revision is triggered under two primary conditions:
+\subsection{Intention Revision}
+Intention revision balances commitment with reactivity. 
+The current intention is matched against newer desires through an identifier. 
+If no matching valid desire remains, a new intention is selected.
+Otherwise, the following rules are applied:
 \begin{itemize}
-    \item Impossibility: The current intention is no longer viable. 
-    For example, if a rival agent picks up the target parcel, or if the path to a delivery tile becomes completely blocked by other agents, the current plan is instantly invalidated.
-    \item Suboptimality: A newer, significantly better opportunity arises. If a high-value parcel spawns nearby, the newly computed utility of picking it up might drastically outweigh the utility of the agent's current intention.
+    \item \textbf{External objectives}: an active objective introduced by the LLM has priority over autonomous desires and remains selected while it is valid.
+    \item \textbf{Crate-task commitment}: a delivery using an active crate handling task is preserved until the task, intention or crate configuration changes.
+    \item \textbf{Immediate pickup}: a valid batch on the current tile can be selected because picking it up requires no additional costs.
+    \item \textbf{Exploration persistence}: an exploration intention is maintained while its corresponding desire remains valid.
+    \item \textbf{Utility improvement}: an intention replaces the current intention only when its utility is strictly greater.
+    \item \textbf{Delivery protection}: an active delivery intention can be replaced only by a pickup that has both greater utility and shorter distance than the current delivery.
 \end{itemize}
-When a revision is triggered, the agent drops its current plan, adopts the new optimal desire as its intention, and generates a new plan to pursue it. 
-This ensures the agent remains both goal-oriented and highly reactive to the evolving state of the game.
+If none of these replacement conditions is satisfied, the current intention is maintained. 
+This policy prevents unnecessary switching, as it reacts to invalid goals, immediate opportunities and more convenient alternatives.
 
 \section{Planning}
 Once an intention is established by the agent, the next step is planning its execution. A plan is a sequence of steps that concludes with the fulfillment of the plan's objective.
