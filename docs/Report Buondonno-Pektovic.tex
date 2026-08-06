@@ -71,7 +71,7 @@ We will then explain the LLM's agent structure and operations. To conclude we wi
 \section{Belief}
 In the Belief-Desire-Intention architecture, an agent's belief set represents what it believes to be true about the environment. 
 The term belief is not used casually: what the set contains is not ground truth, but what the agent has deduced from present and past observations, which may no longer hold.
-As we will see, in our solution we try to keep the most up to date informations and forget what we confirm to be outdated, so priority is given to the information we're most confident about.
+As we will see, in our solution we try to keep the most up to date informations and forget what we confirm to be outdated.
 \\We will now go over the different classes implementing the agent's Belief Set.
 Every class is instantiated per agent rather than shared at module level, which is what allows the BDI and the LLM agent to run in the same process.
 
@@ -97,14 +97,14 @@ It is updated through sensing and through confirmed pickup and putdown actions.
 \subsection{Crates}
 This class is specifically designed to represent the agent's beliefs about the crates in the map, if present.
 A \textbf{Known} map is also used here, it works the same way as for the parcels, only this time it stores crates.
-We also made use of a \textbf{byPosition} map, indexed by a coordinate string.
+\\We also made use of a \textbf{byPosition} map, indexed by a coordinate string.
 \textbf{Known} remains the main belief representation, while the positional index allows to avoid repeatedly scanning all known crates during planning.
 
 \subsection{Partner}
 This class stores the latest information received from the teammate and manages the data exchanged between the two agents. 
 The shared state includes position, carried parcel ids, carried count and carried reward. 
-The agents also exchange directly observed free parcels and announce the parcel they are currently pursuing.
-Before committing to a pickup, an agent compares its distance to the parcel with the distance announced by the partner and yields when the partner is closer.
+The agents also exchange observed free parcels and announce the parcel they are currently pursuing.
+\\Before committing to a pickup, an agent compares its distance to the parcel with the distance announced by the partner and yields if the partner is closer.
 Ties are resolved through a deterministic ordering of the agent ids.
 Their communication is overhead free as they only send new information to each other, avoiding duplicate information.
 
@@ -119,25 +119,22 @@ This class stores the map, the current configuration, the positions covered by t
     \end{cases}
 \end{equation*}
 This conversion allows pickup and delivery utilities to estimate reward loss directly from shortest path length. 
-The movement duration is also used separately to express how many movements have passed since a spawner was last observed.
 \\Each spawner and delivery tile stores the time it was last observed and whether it belongs to a topology that supports a repeatable pickup-delivery cycle.
-This distinction matters on maps with one way regions: a tile may be reachable while leaving the agent unable to return to a useful spawn or delivery area.
-These delivery tiles are preferred during deliberation, while other reachable delivery tiles remain available as a fallback. 
-Exploration is more conservative and considers only spawners from which an operational delivery can still be reached.
+We keep this information for maps with one way regions: a tile may be reachable but it can render the agent unable to return to a useful spawn or delivery area.
+These delivery tiles are prioritised during computations, while all reachable delivery tiles remain available as a fallback. 
+Exploration is conservative and considers only spawners from which an operational delivery can still be reached.
 
-\section{Action Based Belief Revision}
+\subsection{Action Based Belief Revision}
 Beliefs are revised not only through sensing, but also through the confirmed outcome of actions. 
-Waiting for a later observation would leave the next planning cycle using a state that is already known to be outdated.
-After a successful movement, the integer position is recorded immediately. 
+Leaving the belief revision only to observations can make the next planning cycle use a state that is outdated.
 Pickup and putdown outcomes revise the visible, known and carried parcel maps, while a successful crate push updates both crate indexes. 
 These revisions are applied only after the action reports success.
-Sensing events remain authoritative and can correct the local state.
 
-\section{Evidence Based Belief Revision}
-The belief state preserves the latest information, it does not make use of histories or probabilistic values.
-Other agents are represented only by the latest sensing, no future trajectories are predicted.
-Parcels and crates are treated differently, as their last known positions remain useful outside the current field of view.
-They are retained until direct observation contradicts the belief, an action outcome revises it, or, for parcels, the estimated reward becomes negative.
+\subsection{Evidence Based Belief Revision}
+Our belief state preserves the latest information, it does not make use of histories or probabilistic values.
+Enemy agents are represented only by the latest sensing, no future trajectories are predicted.
+\\Parcels and crates are treated differently, as their last known positions remain useful outside the current field of view.
+They are retained until the belief gets contradicted or, for parcels, the estimated reward becomes negative.
 This is an intentional tradeoff. A predictive model could produce an incorrect extrapolation that can suppress valid intentions. 
 
 \section{Desires and Intention Loop}
@@ -146,24 +143,24 @@ This is an intentional tradeoff. A predictive model could produce an incorrect e
     \includegraphics[width=0.5\textwidth]{BDI Loop.png}
     \caption{The BDI Loop.}
 \end{figure}
-During every BDI iteration, the agent generates desires that are currently achievable from its beliefs.
+During every BDI iteration, the agent generates desires that are currently achievable given its beliefs.
 Each desire contains a type, a target, an estimated utility and the identifiers required for planning. 
 \\The agent supports three autonomous desire types:
 \begin{itemize}
-    \item go\_pick\_up: it defines the desire of picking up a parcel.
-    \item go\_deliver: it defines the desire of deliverying the currently carried parcels.
-    \item go\_to\_spawner: this type of desire is used as an exploration option. It is designed to be generated only when the agent currently doesn't have the option of either deliverying or picking up parcels.
+    \item \textbf{go\_pick\_up}: it defines the desire of picking up a parcel.
+    \item \textbf{go\_deliver}: it defines the desire of deliverying the currently carried parcels.
+    \item \textbf{go\_to\_spawner}: this type of desire is used as an exploration option. It is designed to be generated only when the agent currently doesn't have the option of either deliverying or picking up parcels.
 \end{itemize}
-The LLM layer may also introduce temporary external objectives. They enter the same deliberation loop as standard desires, while their interpretation and creation are described in the LLM section.
+The LLM layer may also introduce temporary external objectives. They enter the same loop as standard desires, while their interpretation and creation are described in the LLM section.
 
 \subsection{Desires Generation}
 Utility estimation uses shortest path distances through a BFS search. 
 A BFS from the current position provides the distance to every reachable pickup, delivery and exploration candidate.
-For each possible pickup tile, another search evaluates following routes towards available delivery tiles. 
+For each possible pickup tile, another search evaluates the following routes towards available delivery tiles. 
 This lets the agent estimate the complete cost of collecting and later delivering the parcels.
 \\Let $C$ be the set of currently carried parcels, $b$ a batch of parcels located on the same tile, and
-$\delta$ the estimated reward decay per movement. For a set of parcels $S$ delivered after $D$ movements,
-we define first the estimated reward for delivering a set of parcels after a given amount of movements.
+$\delta$ the estimated reward decay per movement.
+\\For a set of parcels $S$ delivered after $D$ movements, we define the estimated reward for delivering a set of parcels after a given amount of movements.
 \begin{equation*}
     R(S,D) = \sum_{p \in S} \max(0, r_p - \delta D) \cdot m_{parcel}(r_p)
 \end{equation*}
@@ -187,8 +184,8 @@ The pickup utility is:
     U_{pickup}(b,d) = \frac{[R(b,D) + R(C,D)] \cdot m_{stack}(\lvert C \rvert + \lvert b \rvert) \cdot m_{delivery}(d)}{\max(1,D)}
 \end{equation*}
 The reward of the carried parcels is included because they also decay while the agent reaches the batch and then the delivery tile.
-Since all reachable delivery candidates are evaluated, the selected delivery is not necessarily the closest one.
-For each eligible batch, the delivery tile producing the highest positive utility is chosen, and the resulting pickup desire is added to the desire set.
+\\For each eligible batch, the delivery tile producing the highest positive utility is chosen, and the resulting pickup desire is added to the desire set.
+We note that the selected delivery is not necessarily the closest one.
 
 \subsubsection{Delivery Utility}
 This desire can be generated if the agent is carrying at least 1 parcel and the current stack strategy allows delivery.
@@ -222,7 +219,6 @@ During each iteration, the agent:
 \end{enumerate}
 
 \subsection{Intention Revision}
-Intention revision balances commitment with reactivity. 
 The current intention is matched against newer desires through an identifier. 
 If no matching valid desire remains, a new intention is selected.
 Otherwise, the following rules are applied:
@@ -235,85 +231,197 @@ Otherwise, the following rules are applied:
     \item \textbf{Delivery protection}: an active delivery intention can be replaced only by a pickup that has both greater utility and shorter distance than the current delivery.
 \end{itemize}
 If none of these replacement conditions is satisfied, the current intention is maintained. 
-This policy prevents unnecessary switching, as it reacts to invalid goals, immediate opportunities and more convenient alternatives.
 
 \section{Planning}
-Once an intention is established by the agent, the next step is planning its execution. A plan is a sequence of steps that concludes with the fulfillment of the plan's objective.
-\\To establish a plan, we have different options. The first is the more traditional solution for artificial intelligence planning found in the PDDL language.
-Given a domain, with a set of rules, states and possible actions for all the states, it allows to search and find a plan that satisfies a given task, if it's possible.
-\\The second option is less traditional and more standard programming oriented, as we simply make use of a search algorithm to find a path to a desire's target and execute its action.
-\\We decided to use PDDL only when strictly needed, while we `defaulted' to using a BFS search for all other cases. We will explain in the following sections our motivations and use of them.
+Once an intention is established by the agent, the planner translates it into an executable action.
+For ordinary navigation, the path is reconsidered during every BDI cycle and only the next movement is returned. 
+For routes involving crates, the planner may instead maintain a sequence of PDDL actions, which is still executed and validated one step at a time.
+\\We decided to use two planning methods. 
+Breadth First Search (BFS) is the default choice for navigation, while PDDL is used only when the current intention requires requires interacting with one or more crates.
 
-\subsection{BFS Search and Planning}
-For all the cases where PDDL is not strictly needed we opted to use our version of a BFS search.
-\\The Breadth First Search (BFS) is a classic search algorithm that can be used with graphs or grid like environments.
-It performs a search by expanding all nodes in the current depth. Once every node in the current depth has been explored, the search proceeds to the next depth. This process continues until the goal is found.
-As mentioned earlier, this search is optimal for domains where the costs for all actions are equal. This allowed us to use our BFS algorithm to compute shortest path distances for better utility value computations.
-\\Once an intention is established, the agent uses the BFS search to find the shortest path to the intention's target. Once the path is found, the agent follows it and, once it has reached the target destination, performs the action.
-\\Using this search, the BDI agent ended up being very fast and efficient. This is not the case for PDDL planning. 
-Also, we note that this solution is much more flexible to intention revision, or changes in the environment that require a different path to be taken to fulfill the current intention.
-This is due to the fact that computing another BFS search is much faster than going through the PDDL solver.
+\subsection{BFS Navigation}
+Breadth First Search is the default navigation method, including on maps containing crates.
+During ordinary navigation, known crates are treated as blocked tiles, so the agent first tries to find a route around them first.
+\\BFS search is optimal for domains where the costs for all actions are equal, so it returns shortest paths in our case.
+The search follows the directed topology of the map: walls and non traversable tiles are excluded, directional tiles
+only allow movements compatible with their direction, and tiles forbidden by an active strategy are not expanded.
+\\As explained previously, computations need the distance from the agent to several parcels, delivery tiles and spawners. 
+A single BFS from the agent's position computes these distances. 
+In our architecture, using A* for the same purpose would require added costs, while returning paths of the same length given our optimality guarantees.
+\\After an intention has been selected, the planner performs a dedicated BFS towards its target and returns the first movement of the resulting path.
+If the target has already been reached, it returns the corresponding action, such as pickup or putdown. 
+Only one physical action is executed before the following BDI iteration, allowing changes in beliefs or intentions to affect the next decision.
 
-\subsection{PDDL}
-We used PDDL for planning only in cases where it was strictly needed, as its performance is greatly worse than the one we implemented through a simple search. 
-\\The slower performance, especially in our case, is given by the fact that to find a plan, PDDL goes through its own solver. This process is slower than simply performing a search.
-\\We decided to use PDDL for maps with crates. Specifically, when an agent encounters a crate in its path it calls the PDDL solver to find a path that allows the agent to move towards its current intention's target.
-In these cases, the agent stops for some seconds, waiting for the solver to receive the problem's details and for it to send back the satisfying plan.
-Given that BFS alone couldn't solve this kind of problem, we find that relegating PDDL for this use case alone is a satisfying solution, as the agent performs very efficiently in the majority of game worlds.
-\\We note that PDDL is also less flexible to changes in the environment or intention revision. 
-If a path needs to be redefined due to changes in the environment, such as new obstacles, or because of a change of the current intention, the agent has to sit and wait for the whole process again.
+\subsubsection{Dynamic Obstacles}
+Crates and other agents are handled differently. 
+A known crate is a structural obstacle, since passing through it may require an explicit push plan. 
+Another agent is instead considered as a temporary obstacle.
+\\If the next tile is occupied, we search for a detour that avoids the obstruction while still treating crates as blocked.
+If no detour exists, the agent waits rather than immediately declaring the target unreachable.
+When the obstruction persists, the intention is temporarily deferred. 
+Another desire can then be selected, while the original target remains available for a later attempt.
 
-\section{LLM Agent and Communication}
-\subsection{LLM Agent Architecture}
-The LLM Agent operates as a complementary, reasoning partner alongside the BDI agent. 
-Rather than relying solely on hardcoded utility formulas and planning, the LLM agent leverages OpenAI's API to interpret game states, evaluate natural-language events, and decide optimal actions.
-It is also able to interpret, evaluate and perform missions given to it through the in game chat. It can also communicate with the BDI agent.
-The LLM Agent's architecture performs these operations in order to function.
-\begin{enumerate}
-    \item State Serialization and Prompting: On each sensing tick the agent serializes its localized belief state, including grid coordinates, carried parcel rewards, visible decay rates, and map obstacles into a structured prompt context.
-    \item Action Reasoning: The system prompt embeds Deliveroo.js game rules, movement constraints, and action formats. 
-    The LLM outputs structured responses, indicating its own reasoning and computations, if needed. It then performs the required actions to fulfill its own intentions.
-    \item Mission Evaluation: As mentioned earlier, missions can be assigned from the server via game chat.
-    They present side objectives with variable positive or negative rewards. 
-    The LLM agent parses these natural language announcements, evaluates the risk versus reward ratio based on its and the game's current status, and decides whether to accept, delegate, or ignore the mission.  
-    \item Robustness and Fallback: To handle API latency or invalid LLM generations, the agent validates output paths using the BFS/PDDL planner before execution, falling back to basic deterministic actions if a timeout occurs.
-\end{enumerate}
+\subsection{PDDL Crate Planning}
+In some maps, a crate blocks the only available route and reaching the target requires moving it
+rather than going around it. This is the situation reserved for PDDL planning.
 
-\subsection{Multi-Agent Communication Protocol}
-The BDI agent and the LLM Agent form a team. They communicate with each other, adding information to each other's belief and share other informations.
-\\The LLM agent can let the BDI agent know about some ongoing mission, active multipliers or potential negative rewards for specific actions.
-They also let each other know about their intentions, to avoid edge cases where both pursue the same objective. 
-\\Some missions may require strict cooperation between the two agents. The LLM agent is able to send simple instructions to the BDI agent, through either target coordinates or simple instructions.
-We also implemented a simple functionality that lets them choose which of the two should perform an intention and pick the one that is in the better position to efficiently perform it.
-\\To maximize overall team utility and prevent redundant efforts, the BDI and LLM agents communicate asynchronously using the game server's socket conncection.
+\subsubsection{Domain Model}
+The domain requires only two actions. 
+The \textbf{move} action moves the agent to an adjacent crate free tile. 
+The \textbf{push} action requires the agent to stand behind a crate, with a valid and free destination in front of it. 
+The end result moves the crate to the destination and the agent onto the tile previously occupied by the crate.
+Direction is represented through the \textbf{adjacent} and \textbf{push-line} information generated from the map.
+This keeps the domain limited to two general actions instead of defining separate actions for every possible direction.
+
+\subsubsection{Detecting a Route Blocked by a Crate}
+The planner first runs an ordinary BFS with every known crate treated as a blocked tile.
+If this search succeeds, the agent follows the BFS route and the solver is not used.
+\\If no ordinary route exists, the planner searches for a possible crate corridor. 
+When a corridor is found, the agent creates a \textbf{crate task} and uses the planner to find a solution. 
+If none is found, a global PDDL request is used as fallback.
+
+\subsubsection{Plan Validation}
+PDDL planning is more expensive than ordinary BFS and the beliefs may change while a plan is being generated or executed.
+For this reason, the returned plan is treated as a result that must be continuously validated.
+
+\section{LLM Agent}
+The second part of the project requires an agent that can interpret objectives expressed in natural
+language, use the current game context and select the actions needed to complete a mission. 
+\\Our LLM agent receives missions through the game chat, evaluates whether they should be performed, and interacts with the environment through a catalog of tools.
+\\The main architectural choice is that the language model never controls the environment directly.
+All movement, pickup and putdown actions are performed by the BDI executor. 
+When the model requests an action, the LLM layer creates an external objective that enters the agent's BDI loop, which revises its intention, plans the next action, executes it and reconciles its outcome.
+Inside the LLM agent the language layer and the BDI loop share the same beliefs, planner and objective, while the teammate keeps its own independent state.
+LLM requested actions consequently reuse the existing pathfinding, collision handling and belief revision instead of duplicating them.
+
+\subsection{Components and Mission Lifecycle}
+Following the architecture introduced during the course, we separated the agent into components
+with distinct responsibilities:
+\begin{itemize}
+    \item \textbf{LLMClient}: OpenAI's model interface.
+    \item \textbf{LLMMemory}: builds the model context from the goal, the latest beliefs, the active strategies and recent observations.
+    \item \textbf{LLMPlanner}: drives the execution loop, asking the model for one tool at a time or a final answer.
+    \item \textbf{LLMReplanner}: converts a failed result into corrective feedback for the next turn.
+    \item \textbf{LLMExecutor}: validates and executes the tools and connects them to the BDI layer.
+\end{itemize}
+A coordinator class combines them and manages the mission lifecycle.
+Only one mission runs at a time. 
+A request arriving while the agent is busy receives an immediate reply rather than being queued or silently dropped.
+At the end of every mission, the coordinator cancels any objective still active and clears the mission memory.
+
+\subsection{Memory}
+The prompt context is rebuilt before every model call.
+The state section reports the agent's information similarly to what was explained during the Belief section of this report.
+The history keeps up to 8 entries, containing tool outcomes, formatting reminders and corrective observations produced during the current mission.
+\\We deliberately avoid resending the complete raw conversation at every turn. A full history
+would grow continuously and would carry repeated or outdated state descriptions.
+The parcel and delivery lists are capped for the same reason, so that crowded maps do not make the context unnecessarily large.
+
+\subsection{Execution Loop and Replanning}
+For the reasoning process we use a \textbf{ReAct style textual execution loop}. 
+At every turn the model must produce exactly one of two forms, and nothing else:
+\begin{verbatim}
+Thought: <what you are doing and why>  |  Thought: <what you concluded>
+Action: <the name of one tool>         |  Final Answer: <the reply>
+Action Input: <its input>              |
+\end{verbatim}
+The runtime parses the output, executes the requested tool, adds its result to the mission memory as an observation and calls the model again. 
+The loop ends when a final answer is produced, which is then returned to the mission sender through the chat.
+\\If a response contains both an action and a final answer, the action is executed and the answer discarded.
+If several actions are present, only the first is executed, since the others were generated without observing their outcome.
+\\A response matching neither form is treated as a recoverable formatting error: the runtime asks again.
+The loop is bounded on two sides so that an invalid mission cannot continue indefinitely.
+A mission may use at most ten model turns, and a failed model call is retried up to three times before the mission is stopped.
+\\The temperature is set to $0.1$, since tool names, coordinates and inputs require consistency.
+When a tool fails, the replanner doesn't restart from an empty context. It instead records which call failed, why, and that a different approach must be chosen.
+This provides semantic feedback to the model, while the replanning decision itself remains within the LLM agent.
+
+\subsection{Actions as BDI Objectives}
+Atomic physical missions are translated into external BDI objectives instead of being executed by the model.
+\begin{table}[H]
+    \centering
+    \begin{tabular}{llp{8.5cm}}
+        \toprule
+        \textbf{Level} & \textbf{Tool} & \textbf{Purpose} \\
+        \midrule
+        1 & \texttt{go\_to} & Reach a specified tile through the BDI planner \\
+        1 & \texttt{pick\_up} & Pick up the parcels on the current tile \\
+        1 & \texttt{put\_down} & Put down the carried parcels on the current tile \\
+        1 & \texttt{calculate} & Evaluate a restricted arithmetic expression \\
+        2 & \texttt{set\_strategy} & Apply a persistent behavioural or routing rule \\
+        3 & \texttt{rendezvous} & Move both agents near a position and wait for both \\
+        3 & \texttt{handoff\_parcel} & Transfer and deliver the same parcel with two agents \\
+        \bottomrule
+    \end{tabular}
+    \caption{Tool catalog organised by mission level.}
+\end{table}
+The first mission level covers atomic physical requests, arithmetic expressions and direct questions.
+An \textbf{objective} carries a unique identifier, a type and the fields that type requires.
+Navigation objectives carry a target, timed coordination objectives also carry an expiration time.
+Each request exposes a promise only when the BDI layer settles the objective.
+External objectives are represented as high utility desires and prioritised during intention revision, the BDI layer requires no change.
+
+\subsection{Persistent Strategy Adaptation}
+The second mission level introduces persistent changes to the agents' behaviour.
+A strategy remains active until it is replaced or explicitly cleared.
+The LLM agent interprets the request and applies a validated rule inside the belief state,
+which the BDI layer then applies deterministically in every cycle. 
+\\We defined four rule types:
+\begin{itemize}
+    \item \textbf{stack}: a number of parcels to deliver together, with its reward multiplier.
+    \item \textbf{delivery}: a multiplier assigned to one or more delivery tiles.
+    \item \textbf{parcel value}: a multiplier for parcels above or below a given threshold.
+    \item \textbf{avoided tile}: a tile the agent must not traverse.
+\end{itemize}
+A multiplier can be zero, which is how a mission states that a target yields nothing.
+\\These rules do not replace the utility functions described in the Desire section of this report, they instead influence the expected rewards and the conditions under which desires are generated.
+The \textbf{avoided-tile} rule instead acts at the planning level. We made it so that both the BFS and PDDL plannings can't return a plan that goes through the given tile.
+In our implementation, these strategies are applied to both teammates.
+The validated operation is sent to the partner and applied to its own rule store.
+
+\subsection{Coordinated Missions}
+The two agents already cooperate during autonomous play as previously mentioned.
+\\Level 3 missions extends this cooperation through explicit coordinated objectives, of which we implemented two.
+\\The \textbf{Rendezvous} mission asks both agents to reach the neighbourhood of a position within a maximum Manhattan distance and wait for each other.
+The tool selects two distinct free tiles inside the radius, each reachable by the agent it is assigned to.
+One hold objective is locally and the other sent to the partner. Each agent reaches its target through its own BDI loop, and holds until the partner reaches its target.
+The tool completes when both agents report positions that satisfy the given radius.
+\\The mission \textbf{Parcel handoff} requires one agent to acquire a parcel and the other to deliver that same parcel.
+The tool first searches for a configuration that can satisfy the mission. 
+We give the roles of handler and receiver dynamically given the current state.
+\\During the exchange, the handler reaches the exchange tile, puts down the selected parcel and steps onto an exit tile.
+The receiver waits on an adjacent tile until the parcel is on the exchange tile and the handler has left it. It then collects and delivers it.
+Parcel identity is preserved throughout, so the mission cannot succeed by transferring one parcel and delivering another.
+After leaving the exchange tile the handler stays in the hold phase until the receiver reports a terminal result.
+We apply a deadline derived from the complete route the agents must traverse.
+
+\subsection{Prompt Guided Mission Evaluation}
+Some missions explicitly award a negative reward, and others yield unoptimal utility scores given the current agent's status.
+Every mission is therefore evaluated by the model before selecting any tool.
+If a mission is declined, a \textbf{Declined} message is returned, together with a reason for its decline.
 
 \section{Challenge Benchmarks and Conclusions}
 To give an evaluation of the performance of our agents, we decided to measure the BDI agent's performance by trying to replicate the environment found during the first challenge.
 The first challenge only involves the BDI agent. The agent has to simply collect as many points as possible in 5 minutes while competing with other agents.
 \\We ran three maps, a standard map with only the `classic' tiles, a map with unidirectional tiles, and a map with crates.
-For the first map, we paired it against 8 intelligent NPCs, with 15 maximum parcels, for the second, we paired it against 3 intelligent NPCs with 8 maximum parcels.
-For the third map, we decided to maintain the standard settings for the map, given the small space.
 \begin{table}[H]
-\centering
-\begin{minipage}{.45\linewidth}
     \centering
     \caption{BDI Only Performance}
-    \begin{tabular}{cc}
+    \begin{tabular}{cccc}
         \toprule
-        \textbf{Level} & \textbf{Score} \\
+        \textbf{Level} & \textbf{Score} & \textbf{Enemy Agents} & \textbf{Maximum Parcels} \\
         \midrule
-        {26c1\_1} & {2097} \\
-        {26c1\_4} & {1804} \\
-        {crates\_one\_way} & {1273} \\
+        {26c1\_1} & {2097} & {8} & {15} \\
+        {26c1\_4} & {1804} & {3} & {8} \\
+        {crates\_one\_way} & {1273} & {0} & {default} \\
         \bottomrule
     \end{tabular}
-\end{minipage}
-\hfill
 \end{table}
 For the performance of the LLM agent, the lack of a standard benchmark made us choose not to report the results of a benchmark made up by us.
 We obviously tested both the functionality and performance of the LLM agent, both alone and while cooperating with the BDI agent, and we found the results satisfying.
 The LLM agent correctly understands the rules of the game, the missions given to it and it correctly performs actions in the environment.
-If its performance is a concern, we left instructions in our GitHub repo, and we apologise if we missed the presence of a standard benchmark to utilise.
-\\We believe that the project's requests were satisfied, and that the overall performance can be considered quite good.
+We also lack space to give more details in this report given the 10 page limit constraint. 
+\\We left instructions in our GitHub repo to install and run our project, in the case the LLM's performance is of concern.
+We believe that the project's requests were satisfied, and that the overall performance can be considered quite good.
 
 \end{document}
