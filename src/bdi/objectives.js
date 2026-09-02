@@ -2,7 +2,6 @@ import config from "../config.js";
 import { trace } from "../utils/trace.js";
 import { normalizeActionResultEntry } from "./beliefs.js";
 
-// TEMP diagnostic: handoff putdown mismatch.
 const dbg = (...args) => {
     if (config.debug) console.log("[objective]", ...args);
 };
@@ -477,7 +476,7 @@ export class ObjectiveStore {
                 actionType,
                 currentPosition
             )) {
-            // TEMP diagnostic: an id mismatch and a missing parcel look alike here.
+            // A missing parcel and an id mismatch follow the same failure path.
             dbg(
                 `handoff ${actionType} rejected expected=${objective.parcelId}`
                 + ` status=${outcome.status}`
