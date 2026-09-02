@@ -1,48 +1,26 @@
 # Autonomous Software Agents - Deliveroo.js
 
-**Course:** Autonomous Software Agents - University of Trento
+**Course:** Autonomous Software Agents, University of Trento
 
-**Authors:** Sasha Petkovic (sasha.petkovic@studenti.unitn.it, 264689), Daniele Buondonno (daniele.buondonno@studenti.unitn.it, 267888)
+**Authors:** Daniele Buondonno (267888), Sasha Petkovic (264689)
 
-**Report:** 
+**Report:** [Report](docs/Report%20Buondonno-Petkovic.pdf)
 
 ## Overview
 
-This project runs autonomous agents in Deliveroo.js. The agents collect parcels, avoid
-obstacles, coordinate with a teammate and deliver parcels for points.
+This project implements a team of two autonomous agents for the Deliveroo.js environment. Both agents use the same BDI-based core for autonomous parcel collection, delivery, exploration and planning. Agent B additionally includes an LLM layer that interprets natural-language missions, creates BDI objectives and adapts persistent strategies, while physical execution remains under BDI control.
 
-The normal control cycle follows a BDI (Belief-Desire-Intention) architecture:
+The BDI control cycle is:
 
-1. Beliefs store the current agent, parcels, map, crates, other agents and teammate state.
-2. Desires generate and score the goals that can currently be pursued.
-3. Intention revision selects or keeps one goal.
-4. The planner produces one next action using BFS, or PDDL when movable crates block the route.
-5. The executor sends the physical action.
-The control loop reconciles the real server result with the beliefs and planner state.
+1. Sense the environment and revise beliefs.
+2. Generate and evaluate desires.
+3. Revise the current intention.
+4. Plan the next action.
+5. Execute the action and repeat.
 
-The LLM agent uses the same BDI control cycle. Chat missions enter an **LLM execution loop**
-that selects tools and reads their observations. Physical tools create BDI objectives; only
-the BDI executor sends move, pickup and putdown actions to the server. Missions run one at a
-time, with at most one latest pending mission. A semantic tool failure gives the replanner one
-concrete reason, so the next LLM turn can choose another approach.
+At a high level, the system combines utility-based BDI deliberation, BFS for ordinary navigation, PDDL when crate manipulation is required, and direct coordination between the two agents.
 
-### Live LLM context
-
-Each LLM turn rebuilds its context from live beliefs. It includes:
-
-- the agent position, score and carried parcels;
-- known parcels and delivery tiles;
-- the active Level 2 strategy;
-- the partner's last reported position and carried load.
-
-Each agent shares its position and load only when they change. The LLM reads this state
-directly from its context instead of asking for it again.
-
-### Persistent strategy adaptation
-
-The LLM agent can install persistent strategies for stack size, delivery tiles, parcel values,
-and avoided tiles. A strategy can apply to one agent or both agents and remains active until it
-is replaced or cleared.
+LLM missions are handled one at a time. If a new request arrives while another mission is running, it receives an immediate busy reply.
 
 ## Installation
 
@@ -139,8 +117,8 @@ watch that agent play.
 .
 ├── .env.example               # environment variable template
 ├── docs/
-│   ├── Report Buondonno-Pektovic.tex
-│   └── Report Buondonno-Pektovic.pdf
+│   ├── Report Buondonno-Petkovic.tex
+│   └── Report Buondonno-Petkovic.pdf
 ├── package.json               # dependencies and start commands
 ├── package-lock.json          # pinned dependency versions
 ├── README.md
@@ -157,11 +135,11 @@ watch that agent play.
     │   ├── execution.js       # only physical socket actuator
     │   ├── loop.js            # shared BDI control loop
     │   ├── objectives.js      # physical objectives requested by the LLM
-    │   └── rules.js           # Level 2 strategy policies and temporary hold
+    │   └── rules.js           # persistent strategy rules used by BDI deliberation and planning
     ├── llm/
     │   ├── client.js          # OpenAI-compatible model client
-    │   ├── core.js            # active and latest-pending mission lifecycle
-    │   ├── memory.js          # mission context and one pending replan reason
+    │   ├── core.js            # mission lifecycle and busy-state handling
+    │   ├── memory.js          # compact mission context built from current BDI state
     │   ├── planner.js         # LLM execution loop
     │   ├── replanner.js       # requests another approach after a semantic failure
     │   └── executor.js        # tool registry and structured tool results
@@ -169,5 +147,6 @@ watch that agent play.
     │   ├── crate-planner.js   # PDDL client used when crates block normal routes
     │   └── crates-domain.pddl # crate movement domain
     └── utils/
-        └── geometry.js        # BFS and grid geometry helpers
+        ├── geometry.js        # BFS and grid geometry helpers
+        └── trace.js           # optional structured execution tracing
 ```

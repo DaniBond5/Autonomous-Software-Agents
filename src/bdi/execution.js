@@ -45,7 +45,7 @@ export async function executeAction(action, beliefs, socket) {
             catch (error) {
                 return sdkFailure(action, error, beliefs);
             }
-            // TEMP diagnostic: action result shape.
+            // Record the SDK response to diagnose unexpected pickup result shapes.
             dbg(beliefs, `pickup result=${JSON.stringify(result)}`);
             if (!Array.isArray(result) || result.length === 0) {
                 dbg(beliefs, 'pickup failed: no parcels');
@@ -65,7 +65,7 @@ export async function executeAction(action, beliefs, socket) {
             catch (error) {
                 return sdkFailure(action, error, beliefs);
             }
-            // TEMP diagnostic: handoff putdown mismatch.
+            // Record the requested parcel and SDK response for targeted handoff drops.
             dbg(
                 beliefs,
                 `putdown requested=${typeof action.parcelId === 'string'

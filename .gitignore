@@ -6,5 +6,5 @@ node_modules/
 
 # LaTeX report, LaTeX working files.
 docs/*
-!docs/Report Buondonno-Pektovic.pdf
+!docs/Report Buondonno-Petkovic.pdf
 logs/

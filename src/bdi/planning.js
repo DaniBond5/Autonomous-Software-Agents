@@ -110,7 +110,7 @@ const planHandoff = (planner, intention, beliefs) => {
             );
         }
         if (intention.phase === "drop") {
-            // TEMP diagnostic: handoff putdown mismatch.
+            // Record the selected parcel and carried set before validating a handoff drop.
             dbg(
                 beliefs,
                 `handoff drop parcel=${intention.parcelId}`

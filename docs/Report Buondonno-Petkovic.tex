@@ -237,11 +237,11 @@ Once an intention is established by the agent, the planner translates it into an
 For ordinary navigation, the path is reconsidered during every BDI cycle and only the next movement is returned. 
 For routes involving crates, the planner may instead maintain a sequence of PDDL actions, which is still executed and validated one step at a time.
 \\We decided to use two planning methods. 
-Breadth First Search (BFS) is the default choice for navigation, while PDDL is used only when the current intention requires requires interacting with one or more crates.
+Breadth First Search (BFS) is the default choice for navigation, while PDDL is used only when the current intention requires interacting with one or more crates.
 
 \subsection{BFS Navigation}
 Breadth First Search is the default navigation method, including on maps containing crates.
-During ordinary navigation, known crates are treated as blocked tiles, so the agent first tries to find a route around them first.
+During ordinary navigation, known crates are treated as blocked tiles, so the agent first tries to find a route around them.
 \\BFS search is optimal for domains where the costs for all actions are equal, so it returns shortest paths in our case.
 The search follows the directed topology of the map: walls and non traversable tiles are excluded, directional tiles
 only allow movements compatible with their direction, and tiles forbidden by an active strategy are not expanded.
@@ -291,7 +291,7 @@ language, use the current game context and select the actions needed to complete
 \\The main architectural choice is that the language model never controls the environment directly.
 All movement, pickup and putdown actions are performed by the BDI executor. 
 When the model requests an action, the LLM layer creates an external objective that enters the agent's BDI loop, which revises its intention, plans the next action, executes it and reconciles its outcome.
-Inside the LLM agent the language layer and the BDI loop share the same beliefs, planner and objective, while the teammate keeps its own independent state.
+Inside the LLM agent, the language layer and the BDI loop share the same beliefs and objective store, while their planners remain separate. The teammate keeps its own independent state.
 LLM requested actions consequently reuse the existing pathfinding, collision handling and belief revision instead of duplicating them.
 
 \subsection{Components and Mission Lifecycle}
@@ -381,10 +381,10 @@ The validated operation is sent to the partner and applied to its own rule store
 
 \subsection{Coordinated Missions}
 The two agents already cooperate during autonomous play as previously mentioned.
-\\Level 3 missions extends this cooperation through explicit coordinated objectives, of which we implemented two.
+\\Level 3 missions extend this cooperation through explicit coordinated objectives, of which we implemented two.
 \\The \textbf{Rendezvous} mission asks both agents to reach the neighbourhood of a position within a maximum Manhattan distance and wait for each other.
 The tool selects two distinct free tiles inside the radius, each reachable by the agent it is assigned to.
-One hold objective is locally and the other sent to the partner. Each agent reaches its target through its own BDI loop, and holds until the partner reaches its target.
+One hold objective is installed locally and the other is sent to the partner. Each agent reaches its target through its own BDI loop, and holds until the partner reaches its target.
 The tool completes when both agents report positions that satisfy the given radius.
 \\The mission \textbf{Parcel handoff} requires one agent to acquire a parcel and the other to deliver that same parcel.
 The tool first searches for a configuration that can satisfy the mission. 
