@@ -291,7 +291,7 @@ language, use the current game context and select the actions needed to complete
 \\The main architectural choice is that the language model never controls the environment directly.
 All movement, pickup and putdown actions are performed by the BDI executor. 
 When the model requests an action, the LLM layer creates an external objective that enters the agent's BDI loop, which revises its intention, plans the next action, executes it and reconciles its outcome.
-Inside the LLM agent the language layer and the BDI loop share the same beliefs, planner and objective, while the teammate keeps its own independent state.
+Inside the LLM agent, the language layer and the BDI loop share the same beliefs and objective store, while their planners remain separate. The teammate keeps its own independent state.
 LLM requested actions consequently reuse the existing pathfinding, collision handling and belief revision instead of duplicating them.
 
 \subsection{Components and Mission Lifecycle}
