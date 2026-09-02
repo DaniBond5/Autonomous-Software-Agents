@@ -1,7 +1,9 @@
 # Autonomous Software Agents - Deliveroo.js
 
 **Course:** Autonomous Software Agents, University of Trento
-**Authors:** Daniele Buondonno (267888), Sasha Petkovic (264689)  
+
+**Authors:** Daniele Buondonno (267888), Sasha Petkovic (264689)
+
 **Report:** [Report](docs/Report%20Buondonno-Petkovic.pdf)
 
 ## Overview
